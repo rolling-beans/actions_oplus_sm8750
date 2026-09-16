@@ -233,6 +233,9 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
+          curl -sSL "https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT" \
+            | tr -d '\r\n' | base64 -d -i > $GITHUB_WORKSPACE/kernel.afdo
+
           echo "Source and tools initialized successfully!"
 
       - name: Cache ccache-ECS binary
@@ -717,6 +720,7 @@ jobs:
           CONFIG_NETFILTER_XT_TARGET_REJECT=y
           CONFIG_NETFILTER_XT_TARGET_LOG=y
           CONFIG_NETFILTER_XT_MATCH_RECENT=y
+          CONFIG_USER_NS=y
           EOF
           echo "✅ Droidspaces support enabled"
 
@@ -953,13 +957,13 @@ jobs:
           make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC="ccache clang" LD="$(pwd)/ld-wrapper" HOSTLD="$(pwd)/ld-wrapper" \
             O=$GITHUB_WORKSPACE/kout \
-            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option" \
+            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option" -fprofile-sample-use=$GITHUB_WORKSPACE/kernel.afdo\
             gki_defconfig 2>&1 | tee -a /tmp/kbuild.log
 
           make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC="ccache clang" LD="$(pwd)/ld-wrapper" HOSTLD="$(pwd)/ld-wrapper" \
             O=$GITHUB_WORKSPACE/kout \
-            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option ${EXTRA_CFLAGS:-} ${MAP}" \
+            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option -fprofile-sample-use=$GITHUB_WORKSPACE/kernel.afdo ${EXTRA_CFLAGS:-} ${MAP}" \
             Image 2>&1 | tee -a /tmp/kbuild.log
 
           echo "Kernel Compilation Complete!"
