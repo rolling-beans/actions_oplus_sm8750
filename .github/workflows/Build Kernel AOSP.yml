@@ -233,8 +233,8 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-          curl -sSL "https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT" \
-            | tr -d '\r\n' | base64 -d -i > $GITHUB_WORKSPACE/kernel.afdo
+          curl -sSLf "https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT" \
+            | base64 -d > $GITHUB_WORKSPACE/kernel.afdo
 
           echo "Source and tools initialized successfully!"
 
