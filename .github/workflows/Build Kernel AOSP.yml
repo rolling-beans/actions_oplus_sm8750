@@ -969,7 +969,7 @@ jobs:
           make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC="ccache clang" LD="$(pwd)/ld-wrapper" HOSTLD="$(pwd)/ld-wrapper" \
             O=$GITHUB_WORKSPACE/kout \
-            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option -fprofile-sample-use=$GITHUB_WORKSPACE/kernel.afdo -Rpass=sample-profile ${EXTRA_CFLAGS:-} ${MAP}" \
+            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option -fprofile-sample-use=$GITHUB_WORKSPACE/kernel.afdo ${EXTRA_CFLAGS:-} ${MAP}" \
             Image 2>&1 | tee -a /tmp/kbuild.log
 
           echo "Kernel Compilation Complete!"
