@@ -538,6 +538,12 @@ jobs:
             esac
           fi
 
+      - name: ⚡ Setup NoMount
+        run: |
+          cd kernel_workspace/common
+          echo "🛠️ Setting up NoMount (builtin)..."
+          curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
+
       - name: Apply LZ4 1.10.0 & ZSTD 1.5.7 Patches
         if: inputs.lz4_enable
         run: |
