@@ -1002,6 +1002,19 @@ jobs:
           EOF
           chmod +x "$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper"
 
+          # The kernel workflow builds only Image, so Kbuild does not create
+          # the external-module Module.symvers. vmlinux.symvers is generated
+          # during the vmlinux link and contains the exported kernel symbols
+          # required by modpost for Kasumi.
+          if [ ! -s "$GITHUB_WORKSPACE/kout/Module.symvers" ]; then
+            if [ ! -s "$GITHUB_WORKSPACE/kout/vmlinux.symvers" ]; then
+              echo "::error::Neither kout/Module.symvers nor kout/vmlinux.symvers exists"
+              exit 1
+            fi
+            cp "$GITHUB_WORKSPACE/kout/vmlinux.symvers"                "$GITHUB_WORKSPACE/kout/Module.symvers"
+            echo "✅ Prepared kout/Module.symvers from kout/vmlinux.symvers"
+          fi
+
           echo "🔧 Building Kasumi against the prepared 6.6.143 kernel..."
           set -o pipefail
           make -C common \
