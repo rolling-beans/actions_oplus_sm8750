@@ -979,6 +979,42 @@ jobs:
           ccache -s
           df -h
 
+      - name: 🧩 Build Kasumi LKM
+        run: |
+          set -e
+          cd $GITHUB_WORKSPACE/kernel_workspace
+
+          echo "📦 Cloning Kasumi..."
+          rm -rf kasumi
+          git clone --depth=1 https://github.com/Rouyashiki/Kasumi.git kasumi
+
+          echo "🔧 Building Kasumi against the prepared 6.6.143 kernel..."
+          make -C common \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC="ccache clang" \
+            LD="$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper" \
+            HOSTLD="$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper" \
+            O=$GITHUB_WORKSPACE/kout \
+            M=$GITHUB_WORKSPACE/kernel_workspace/kasumi/src \
+            modules 2>&1 | tee -a /tmp/kasumi-kbuild.log
+
+          KASUMI_KO="$GITHUB_WORKSPACE/kernel_workspace/kasumi/src/kasumi_lkm.ko"
+          if [ ! -f "$KASUMI_KO" ]; then
+            echo "::error::Kasumi module was not produced: $KASUMI_KO"
+            find "$GITHUB_WORKSPACE/kernel_workspace/kasumi/src" -maxdepth 1 -type f -name '*.ko' -print
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/kasumi-artifact"
+          cp "$KASUMI_KO" "$GITHUB_WORKSPACE/kasumi-artifact/kasumi_lkm.ko"
+          cp "$GITHUB_WORKSPACE/kernel_workspace/kasumi/src/Module.symvers" "$GITHUB_WORKSPACE/kasumi-artifact/" 2>/dev/null || true
+
+          echo "✅ Kasumi LKM built successfully:"
+          ls -lh "$GITHUB_WORKSPACE/kasumi-artifact/"
+          file "$GITHUB_WORKSPACE/kasumi-artifact/kasumi_lkm.ko"
+
       - name: 📦 Save New CCache
         if: success()
         uses: actions/cache/save@v4
@@ -1043,6 +1079,14 @@ jobs:
           echo "MemOpt: ${{ github.event.inputs.mem_opt_patches }}" >> ./ak3.log
           echo "BORE: ${{ github.event.inputs.bore_enable }}" >> ./ak3.log
           zip -z ../$AK3_NAME < ./ak3.log
+
+      - name: 📤 Upload Kasumi LKM
+        uses: actions/upload-artifact@v4
+        with:
+          name: kasumi-lkm-${{ env.KERNEL_FULL_VERSION }}
+          path: |
+            ${{ github.workspace }}/kasumi-artifact/kasumi_lkm.ko
+            ${{ github.workspace }}/kasumi-artifact/Module.symvers
 
       - name: 📤 Upload AnyKernel3
         uses: actions/upload-artifact@v4
