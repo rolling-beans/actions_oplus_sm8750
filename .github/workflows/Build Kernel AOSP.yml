@@ -988,7 +988,22 @@ jobs:
           rm -rf kasumi
           git clone --depth=1 https://github.com/Rouyashiki/Kasumi.git kasumi
 
+          echo "🔧 Preparing the same AOSP toolchain used for the 6.6.143 kernel..."
+          export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/linux-x86/bin:$PATH"
+          CLANG_DIR="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin"
+          echo "Clang: $($CLANG_DIR/clang --version | head -n 1)"
+          echo "LLD:   $($CLANG_DIR/ld.lld --version | head -n 1)"
+
+          # Each GitHub Actions step has its own shell, so the ld-wrapper
+          # created by the kernel build step is not guaranteed to exist here.
+          cat > "$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper" <<'EOF'
+          #!/bin/bash
+          exec ld.lld "$@" --thinlto-cache-dir=$LDCACHE_DIR --thinlto-jobs=$(($(nproc --all) / 2))
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper"
+
           echo "🔧 Building Kasumi against the prepared 6.6.143 kernel..."
+          set -o pipefail
           make -C common \
             ARCH=arm64 \
             LLVM=1 \
