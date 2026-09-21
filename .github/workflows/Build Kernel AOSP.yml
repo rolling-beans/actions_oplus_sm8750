@@ -566,16 +566,64 @@ jobs:
           
           patch -p1 < 002-zstd.patch || echo "ZSTD Patch failed or already applied"
 
-      - name: Apply LZ4KD Patch
-        if: inputs.lz4kd_enable
+      - name: Apply LZ4 1.10.0 & ZSTD 1.5.7 Patches
+        if: inputs.lz4_enable
         run: |
-          echo "Adding LZ4KD patch..."
+          echo "Adding LZ4 & ZSTD patches..."
           cd kernel_workspace/common
-          cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./include/linux/
-          cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./lib
-          cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./crypto
-          cp ../SukiSU_patch/other/zram/zram_patch/${{ env.KERNEL_VERSION }}/lz4kd.patch ./
-          patch -p1 -F 3 < lz4kd.patch || true
+
+          cp ../kernel_patches/zram/001-lz4.patch ./
+          cp ../kernel_patches/zram/001-lz4-clearMake.patch ./
+          cp ../kernel_patches/zram/002-zstd.patch ./
+
+          # 001-lz4.patch requires a terminating empty line after GIT binary patch
+          printf '\n' >> 001-lz4.patch
+
+          # Existing OnePlus source has an extra export which conflicts with 001-lz4.patch
+          sed -i '/^EXPORT_SYMBOL(LZ4_resetStreamHC);$/d' lib/lz4/lz4hc_compress.c
+
+          git apply -p1 < 001-lz4.patch
+          git apply -p1 < 001-lz4-clearMake.patch
+
+          # 002-zstd.patch contains one obsolete x86-only hunk in
+          # lib/zstd/common/portability_macros.h. Remove only that hunk.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("002-zstd.patch")
+          s = p.read_text()
+
+          start = (
+              "diff --git a/lib/zstd/common/portability_macros.h "
+              "b/lib/zstd/common/portability_macros.h"
+          )
+          pos = s.index(start)
+
+          next_file = s.find("\ndiff --git ", pos + len(start))
+          if next_file == -1:
+              next_file = len(s)
+
+          block = s[pos:next_file]
+
+          hunk_start = block.index("@@ -45,30 +46,35 @@")
+          next_hunk = block.find("\n@@ ", hunk_start + 1)
+
+          if next_hunk == -1:
+              raise RuntimeError("Could not locate end of portability_macros.h hunk #3")
+
+          block = block[:hunk_start] + block[next_hunk + 1:]
+          s = s[:pos] + block + s[next_file:]
+
+          p.write_text(s)
+          PY
+
+          patch -p1 < 002-zstd.patch
+
+          if find . -name '*.rej' -print -quit | grep -q .; then
+            echo "ERROR: patch rejects found"
+            find . -name '*.rej' -print
+            exit 1
+          fi
 
       - name: Configure ZRAM Writeback
         if: inputs.zram_writeback
