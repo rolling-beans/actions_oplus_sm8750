@@ -544,6 +544,7 @@ jobs:
           echo "🛠️ Setting up NoMount (builtin)..."
           curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
 
+
       - name: Apply LZ4 1.10.0 & ZSTD 1.5.7 Patches
         if: inputs.lz4_enable
         run: |
@@ -551,7 +552,6 @@ jobs:
           cd kernel_workspace/common
 
           cp ../kernel_patches/zram/001-lz4.patch ./
-          cp ../kernel_patches/zram/001-lz4-clearMake.patch ./
           cp ../kernel_patches/zram/002-zstd.patch ./
 
           # 001-lz4.patch requires a terminating empty line after GIT binary patch
@@ -561,7 +561,6 @@ jobs:
           sed -i '/^EXPORT_SYMBOL(LZ4_resetStreamHC);$/d' lib/lz4/lz4hc_compress.c
 
           git apply -p1 < 001-lz4.patch
-          git apply -p1 < 001-lz4-clearMake.patch
 
           # 002-zstd.patch contains one obsolete x86-only hunk in
           # lib/zstd/common/portability_macros.h. Remove only that hunk.
@@ -602,7 +601,7 @@ jobs:
             find . -name '*.rej' -print
             exit 1
           fi
-
+            
       - name: Configure ZRAM Writeback
         if: inputs.zram_writeback
         working-directory: kernel_workspace
