@@ -554,28 +554,6 @@ jobs:
           cp ../kernel_patches/zram/001-lz4-clearMake.patch ./
           cp ../kernel_patches/zram/002-zstd.patch ./
 
-          # mrcxlinux copy lacks the empty line terminating the Git binary hunk
-          printf '\n' >> 001-lz4.patch
-
-          # Adapt the existing 6.6 LZ4 tree to the exact preimage expected by 001-lz4.patch
-          sed -i '/^EXPORT_SYMBOL(LZ4_resetStreamHC);$/d' \
-              lib/lz4/lz4hc_compress.c
-
-          git apply -p1 < 001-lz4.patch
-          git apply -p1 < 001-lz4-clearMake.patch
-          
-          patch -p1 < 002-zstd.patch || echo "ZSTD Patch failed or already applied"
-
-      - name: Apply LZ4 1.10.0 & ZSTD 1.5.7 Patches
-        if: inputs.lz4_enable
-        run: |
-          echo "Adding LZ4 & ZSTD patches..."
-          cd kernel_workspace/common
-
-          cp ../kernel_patches/zram/001-lz4.patch ./
-          cp ../kernel_patches/zram/001-lz4-clearMake.patch ./
-          cp ../kernel_patches/zram/002-zstd.patch ./
-
           # 001-lz4.patch requires a terminating empty line after GIT binary patch
           printf '\n' >> 001-lz4.patch
 
