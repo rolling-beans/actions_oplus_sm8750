@@ -561,6 +561,9 @@ jobs:
           git apply --check /tmp/ramoops_mem_name.patch
           git apply /tmp/ramoops_mem_name.patch
 
+          # Linux 6.6.143 uses the 3-argument strscpy() API.
+          sed -i 's/strscpy(map->name, name);/strscpy(map->name, name, sizeof(map->name));/' mm/memblock.c
+
           DEFCONFIG=arch/arm64/configs/gki_defconfig
 
           python3 - <<'PY'
