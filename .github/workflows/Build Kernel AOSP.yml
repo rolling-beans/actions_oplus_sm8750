@@ -785,8 +785,9 @@ jobs:
           echo "=== embedded crash-capture command line ==="
           grep '^CONFIG_CMDLINE=' "$DEFCONFIG"
 
-          echo "=== pstore backport diff ==="
-          git diff --stat -- mm/memblock.c include/linux/mm.h fs/pstore/ram.c
+          echo "=== pstore backport verification ==="
+          grep -n -E 'reserve_mem_find_by_name|__setup\("reserve_mem=|mem_name|CONFIG_PSTORE|reserve_mem=8M|ramoops\.mem_name' \
+            mm/memblock.c include/linux/mm.h fs/pstore/ram.c "$DEFCONFIG" || true
       - name: ⚡ Setup NoMount
         run: |
           cd kernel_workspace/common
