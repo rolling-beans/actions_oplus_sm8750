@@ -686,45 +686,52 @@ jobs:
               mmh.write_text(mmh_text)
 
           ram_text = ramc.read_text()
-          param_anchor = '''static unsigned long long mem_address;
-          module_param_hw(mem_address, ullong, other, 0400);
-          MODULE_PARM_DESC(mem_address,
-                  "start of reserved RAM used to store oops/panic logs");
-
-          static ulong mem_size;'''
-          param_insert = '''static unsigned long long mem_address;
-          module_param_hw(mem_address, ullong, other, 0400);
-          MODULE_PARM_DESC(mem_address,
-                  "start of reserved RAM used to store oops/panic logs");
-
-          static char *mem_name;
-          module_param_named(mem_name, mem_name, charp, 0400);
-          MODULE_PARM_DESC(mem_name, "name of kernel param that holds addr");
-
-          static ulong mem_size;'''
+          param_anchor = (
+              "static unsigned long long mem_address;\n"
+              "\tmodule_param_hw(mem_address, ullong, other, 0400);\n"
+              "\tMODULE_PARM_DESC(mem_address,\n"
+              "\t\t\"start of reserved RAM used to store oops/panic logs\");\n"
+              "\n"
+              "\n"
+              "static ulong mem_size;"
+          )
+          param_insert = (
+              "static unsigned long long mem_address;\n"
+              "\tmodule_param_hw(mem_address, ullong, other, 0400);\n"
+              "\tMODULE_PARM_DESC(mem_address,\n"
+              "\t\t\"start of reserved RAM used to store oops/panic logs\");\n"
+              "\n"
+              "static char *mem_name;\n"
+              "\tmodule_param_named(mem_name, mem_name, charp, 0400);\n"
+              "\tMODULE_PARM_DESC(mem_name, \"name of kernel param that holds addr\");\n"
+              "\n"
+              "\tstatic ulong mem_size;"
+          )
           if "static char *mem_name;" not in ram_text:
               if param_anchor not in ram_text:
                   raise SystemExit("fs/pstore/ram.c parameter anchor not found")
               ram_text = ram_text.replace(param_anchor, param_insert, 1)
 
-          dummy_anchor = '''static void __init ramoops_register_dummy(void)
-          {
-                  struct ramoops_platform_data pdata;
-          '''
-          dummy_insert = '''static void __init ramoops_register_dummy(void)
-          {
-                  struct ramoops_platform_data pdata;
-
-                  if (mem_name) {
-                          phys_addr_t start;
-                          phys_addr_t size;
-
-                          if (reserve_mem_find_by_name(mem_name, &start, &size)) {
-                                  mem_address = start;
-                                  mem_size = size;
-                          }
-                  }
-          '''
+          dummy_anchor = (
+              "static void __init ramoops_register_dummy(void)\n"
+              "{\n"
+              "\tstruct ramoops_platform_data pdata;\n"
+          )
+          dummy_insert = (
+              "static void __init ramoops_register_dummy(void)\n"
+              "{\n"
+              "\tstruct ramoops_platform_data pdata;\n"
+              "\n"
+              "\tif (mem_name) {\n"
+              "\t\tphys_addr_t start;\n"
+              "\t\tphys_addr_t size;\n"
+              "\n"
+              "\t\tif (reserve_mem_find_by_name(mem_name, &start, &size)) {\n"
+              "\t\t\tmem_address = start;\n"
+              "\t\t\tmem_size = size;\n"
+              "\t\t}\n"
+              "\t}\n"
+          )
           if "reserve_mem_find_by_name(mem_name" not in ram_text:
               if dummy_anchor not in ram_text:
                   raise SystemExit("fs/pstore/ram.c dummy anchor not found")
