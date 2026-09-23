@@ -628,13 +628,6 @@ jobs:
               if (!len || len >= RESERVE_MEM_NAME_SIZE)
                   return -EINVAL;
 
-              for (p = name; *p; p++) {
-                  if (!isspace(*p))
-                      break;
-              }
-              if (!*p)
-                  return -EINVAL;
-
               if (reserve_mem_find_by_name(name, &start, &tmp))
                   return -EBUSY;
 
