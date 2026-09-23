@@ -748,7 +748,12 @@ jobs:
               "CONFIG_PSTORE=y",
               "CONFIG_PSTORE_CONSOLE=y",
               "CONFIG_PSTORE_PMSG=y",
+              "CONFIG_PSTORE_FTRACE=y",
               "CONFIG_PSTORE_RAM=y",
+              "CONFIG_FUNCTION_TRACER=y",
+              "CONFIG_DEBUG_FS=y",
+              "CONFIG_DETECT_HUNG_TASK=y",
+              "CONFIG_BOOTPARAM_HUNG_TASK_PANIC=y",
               "CONFIG_CMDLINE_EXTEND=y",
           ]
           for item in required:
@@ -770,7 +775,9 @@ jobs:
               " ramoops.record_size=1M"
               " ramoops.console_size=1M"
               " ramoops.pmsg_size=1M"
+              " ramoops.ftrace_size=1M"
               " ramoops.dump_oops=1"
+              " hung_task_panic=1"
           )
           for token in extra.split():
               if token not in current.split():
