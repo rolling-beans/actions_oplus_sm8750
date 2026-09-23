@@ -687,25 +687,24 @@ jobs:
 
           ram_text = ramc.read_text()
           param_anchor = (
-              "static unsigned long long mem_address;\n"
-              "\tmodule_param_hw(mem_address, ullong, other, 0400);\n"
-              "\tMODULE_PARM_DESC(mem_address,\n"
-              "\t\t\"start of reserved RAM used to store oops/panic logs\");\n"
-              "\n"
-              "\n"
+              "static unsigned long long mem_address;\\n"
+              "module_param_hw(mem_address, ullong, other, 0400);\\n"
+              "MODULE_PARM_DESC(mem_address,\\n"
+              "\\t\\t\\"start of reserved RAM used to store oops/panic logs\\");\\n"
+              "\\n"
               "static ulong mem_size;"
           )
           param_insert = (
-              "static unsigned long long mem_address;\n"
-              "\tmodule_param_hw(mem_address, ullong, other, 0400);\n"
-              "\tMODULE_PARM_DESC(mem_address,\n"
-              "\t\t\"start of reserved RAM used to store oops/panic logs\");\n"
-              "\n"
-              "static char *mem_name;\n"
-              "\tmodule_param_named(mem_name, mem_name, charp, 0400);\n"
-              "\tMODULE_PARM_DESC(mem_name, \"name of kernel param that holds addr\");\n"
-              "\n"
-              "\tstatic ulong mem_size;"
+              "static unsigned long long mem_address;\\n"
+              "module_param_hw(mem_address, ullong, other, 0400);\\n"
+              "MODULE_PARM_DESC(mem_address,\\n"
+              "\\t\\t\\"start of reserved RAM used to store oops/panic logs\\");\\n"
+              "\\n"
+              "static char *mem_name;\\n"
+              "module_param_named(mem_name, mem_name, charp, 0400);\\n"
+              "MODULE_PARM_DESC(mem_name, \\"name of kernel param that holds addr\\");\\n"
+              "\\n"
+              "static ulong mem_size;"
           )
           if "static char *mem_name;" not in ram_text:
               if param_anchor not in ram_text:
