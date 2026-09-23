@@ -149,6 +149,12 @@ on:
         type: boolean
         default: true
 
+      pstore_debug:
+        description: 'Enable experimental pstore/ramoops crash capture (reserves 8 MiB RAM)'
+        required: true
+        type: boolean
+        default: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -537,6 +543,216 @@ jobs:
                 ;;
             esac
           fi
+
+      - name: 🧪 Enable pstore/ramoops crash capture
+        if: inputs.pstore_debug
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/common
+
+          # Backport upstream reserve_mem support (Linux commits
+          # 1e4c64b71c9b and d9d814eebb1a) because the 6.6.143 OnePlus
+          # source does not contain it. This lets ramoops obtain a
+          # dynamically reserved DRAM region without changing DT/vendor_boot.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          reserve_code = r'''
+          /* Keep a table to reserve named memory */
+          #define RESERVE_MEM_MAX_ENTRIES 8
+          #define RESERVE_MEM_NAME_SIZE 16
+          struct reserve_mem_table {
+              char name[RESERVE_MEM_NAME_SIZE];
+              phys_addr_t start;
+              phys_addr_t size;
+          };
+          static struct reserve_mem_table reserved_mem_table[RESERVE_MEM_MAX_ENTRIES];
+          static int reserved_mem_count;
+
+          static void __init reserved_mem_add(phys_addr_t start, phys_addr_t size,
+                                               const char *name)
+          {
+              struct reserve_mem_table *map;
+
+              map = &reserved_mem_table[reserved_mem_count++];
+              map->start = start;
+              map->size = size;
+              strscpy(map->name, name);
+          }
+
+          int reserve_mem_find_by_name(const char *name, phys_addr_t *start,
+                                       phys_addr_t *size)
+          {
+              struct reserve_mem_table *map;
+              int i;
+
+              for (i = 0; i < reserved_mem_count; i++) {
+                  map = &reserved_mem_table[i];
+                  if (!map->size)
+                      continue;
+                  if (!strcmp(name, map->name)) {
+                      *start = map->start;
+                      *size = map->size;
+                      return 1;
+                  }
+              }
+              return 0;
+          }
+          EXPORT_SYMBOL_GPL(reserve_mem_find_by_name);
+
+          static int __init reserve_mem(char *p)
+          {
+              phys_addr_t start, size, align, tmp;
+              char *name;
+              char *oldp;
+              size_t len;
+
+              if (!p)
+                  return -EINVAL;
+              if (reserved_mem_count >= RESERVE_MEM_MAX_ENTRIES)
+                  return -EBUSY;
+
+              oldp = p;
+              size = memparse(p, &p);
+              if (!size || p == oldp || *p != ':')
+                  return -EINVAL;
+
+              align = memparse(p + 1, &p);
+              if (*p != ':')
+                  return -EINVAL;
+              if (align < SMP_CACHE_BYTES)
+                  align = SMP_CACHE_BYTES;
+
+              name = p + 1;
+              len = strlen(name);
+              if (!len || len >= RESERVE_MEM_NAME_SIZE)
+                  return -EINVAL;
+
+              for (p = name; *p; p++) {
+                  if (!isspace(*p))
+                      break;
+              }
+              if (!*p)
+                  return -EINVAL;
+
+              if (reserve_mem_find_by_name(name, &start, &tmp))
+                  return -EBUSY;
+
+              start = memblock_phys_alloc(size, align);
+              if (!start)
+                  return -ENOMEM;
+
+              reserved_mem_add(start, size, name);
+              pr_info("reserve_mem: %zu bytes @ 0x%llx (%s)\\n",
+                      (size_t)size, (unsigned long long)start, name);
+              return 1;
+          }
+          __setup("reserve_mem=", reserve_mem);
+          '''
+
+          mm = Path("mm/memblock.c")
+          text = mm.read_text()
+          marker = "\n#if defined(CONFIG_DEBUG_FS) && defined(CONFIG_ARCH_KEEP_MEMBLOCK)"
+          if "RESERVE_MEM_MAX_ENTRIES" not in text:
+              if marker not in text:
+                  raise SystemExit("memblock insertion marker not found")
+              text = text.replace(marker, "\n" + reserve_code.rstrip() + "\n" + marker, 1)
+              mm.write_text(text)
+
+          mmh = Path("include/linux/mm.h")
+          text = mmh.read_text()
+          decl = "int reserve_mem_find_by_name(const char *name, phys_addr_t *start, phys_addr_t *size);"
+          marker = "\n#endif /* _LINUX_MM_H */"
+          if decl not in text:
+              if marker not in text:
+                  raise SystemExit("mm.h insertion marker not found")
+              text = text.replace(marker, "\n" + decl + marker, 1)
+              mmh.write_text(text)
+
+          ram = Path("fs/pstore/ram.c")
+          text = ram.read_text()
+          param_marker = "\nstatic ulong mem_size;"
+          param_block = '''
+          static char *mem_name;
+          module_param_named(mem_name, mem_name, charp, 0400);
+          MODULE_PARM_DESC(mem_name, "name of reserved memory region");
+          '''
+          if "module_param_named(mem_name, mem_name" not in text:
+              if param_marker not in text:
+                  raise SystemExit("ram.c mem_name insertion marker not found")
+              text = text.replace(param_marker, "\n" + param_block.strip("\n") + param_marker, 1)
+
+          dummy_marker = "\tstruct ramoops_platform_data pdata;\n"
+          dummy_block = '''
+          \tif (mem_name) {
+          \t\tphys_addr_t start;
+          \t\tphys_addr_t size;
+
+          \t\tif (reserve_mem_find_by_name(mem_name, &start, &size)) {
+          \t\t\tmem_address = start;
+          \t\t\tmem_size = size;
+          \t\t\tpr_info("ramoops: using reserved memory '%s': 0x%zx@0x%llx\\n",
+          \t\t\t\tmem_name, (size_t)size, (unsigned long long)start);
+          \t\t} else {
+          \t\t\tpr_err("ramoops: reserved memory '%s' not found\\n", mem_name);
+          \t\t}
+          \t}
+          '''
+          if "ramoops: using reserved memory" not in text:
+              if dummy_marker not in text:
+                  raise SystemExit("ram.c dummy insertion marker not found")
+              text = text.replace(dummy_marker, dummy_marker + dummy_block, 1)
+
+          ram.write_text(text)
+          PY
+
+          DEFCONFIG=arch/arm64/configs/gki_defconfig
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("arch/arm64/configs/gki_defconfig")
+          lines = p.read_text().splitlines()
+
+          required = [
+              "CONFIG_PSTORE=y",
+              "CONFIG_PSTORE_CONSOLE=y",
+              "CONFIG_PSTORE_PMSG=y",
+              "CONFIG_PSTORE_RAM=y",
+              "CONFIG_CMDLINE_EXTEND=y",
+          ]
+          for item in required:
+              if item not in lines:
+                  lines.append(item)
+
+          idx = next((i for i, line in enumerate(lines)
+                      if line.startswith("CONFIG_CMDLINE=")), None)
+          if idx is None:
+              raise SystemExit("CONFIG_CMDLINE is missing from gki_defconfig")
+
+          current = lines[idx].split("=", 1)[1].strip()
+          if current.startswith('"') and current.endswith('"'):
+              current = current[1:-1]
+
+          extra = (
+              " reserve_mem=8M:4096:vpnhide_pstore"
+              " ramoops.mem_name=vpnhide_pstore"
+              " ramoops.record_size=1M"
+              " ramoops.console_size=1M"
+              " ramoops.pmsg_size=1M"
+              " ramoops.dump_oops=1"
+          )
+          for token in extra.split():
+              if token not in current.split():
+                  current += " " + token
+
+          lines[idx] = f'CONFIG_CMDLINE="{current}"'
+          p.write_text("\\n".join(lines) + "\\n")
+          PY
+
+          echo "=== pstore debug kernel configuration ==="
+          grep -E '^(CONFIG_PSTORE|CONFIG_CMDLINE(_EXTEND)?=)' "$DEFCONFIG" || true
+          echo "=== embedded crash-capture command line ==="
+          grep '^CONFIG_CMDLINE=' "$DEFCONFIG"
 
       - name: ⚡ Setup NoMount
         run: |
