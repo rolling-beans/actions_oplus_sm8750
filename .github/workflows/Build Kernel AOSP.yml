@@ -550,19 +550,189 @@ jobs:
           set -euo pipefail
           cd kernel_workspace/common
 
-          echo "📦 Applying upstream reserve_mem + ramoops.mem_name support..."
-          curl -fsSL "https://github.com/torvalds/linux/commit/1e4c64b71c9bf230b25fde12cbcceacfdc8b3332.patch" \
-            -o /tmp/reserve_mem.patch
-          curl -fsSL "https://github.com/torvalds/linux/commit/d9d814eebb1ae9742e7fd7f39730653b16326bd4.patch" \
-            -o /tmp/ramoops_mem_name.patch
+          echo "🧪 Backporting named RAM reservation for pstore/ramoops..."
 
-          git apply --check /tmp/reserve_mem.patch
-          git apply /tmp/reserve_mem.patch
-          git apply --check /tmp/ramoops_mem_name.patch
-          git apply /tmp/ramoops_mem_name.patch
+          python3 - <<'PY'
+          from pathlib import Path
 
-          # Linux 6.6.143 uses the 3-argument strscpy() API.
-          sed -i 's/strscpy(map->name, name);/strscpy(map->name, name, sizeof(map->name));/' mm/memblock.c
+          root = Path(".")
+
+          memblock = root / "mm/memblock.c"
+          mmh = root / "include/linux/mm.h"
+          ramc = root / "fs/pstore/ram.c"
+
+          reserve_code = r'''
+          /* Keep a table to reserve named memory */
+          #define RESERVE_MEM_MAX_ENTRIES        8
+          #define RESERVE_MEM_NAME_SIZE          16
+
+          struct reserve_mem_table {
+              char            name[RESERVE_MEM_NAME_SIZE];
+              phys_addr_t     start;
+              phys_addr_t     size;
+          };
+
+          static struct reserve_mem_table reserved_mem_table[RESERVE_MEM_MAX_ENTRIES];
+          static int reserved_mem_count;
+
+          static void __init reserved_mem_add(phys_addr_t start, phys_addr_t size,
+                                               const char *name)
+          {
+              struct reserve_mem_table *map;
+
+              map = &reserved_mem_table[reserved_mem_count++];
+              map->start = start;
+              map->size = size;
+              strscpy(map->name, name, sizeof(map->name));
+          }
+
+          int reserve_mem_find_by_name(const char *name, phys_addr_t *start,
+                                       phys_addr_t *size)
+          {
+              struct reserve_mem_table *map;
+              int i;
+
+              for (i = 0; i < reserved_mem_count; i++) {
+                  map = &reserved_mem_table[i];
+                  if (!map->size)
+                      continue;
+                  if (strcmp(name, map->name) == 0) {
+                      *start = map->start;
+                      *size = map->size;
+                      return 1;
+                  }
+              }
+
+              return 0;
+          }
+          EXPORT_SYMBOL_GPL(reserve_mem_find_by_name);
+
+          static int __init reserve_mem(char *p)
+          {
+              phys_addr_t start, size, align, tmp;
+              char *name;
+              char *oldp;
+              int len;
+
+              if (!p)
+                  return -EINVAL;
+
+              if (reserved_mem_count >= RESERVE_MEM_MAX_ENTRIES)
+                  return -EBUSY;
+
+              oldp = p;
+              size = memparse(p, &p);
+              if (!size || p == oldp)
+                  return -EINVAL;
+
+              if (*p != ':')
+                  return -EINVAL;
+
+              align = memparse(p + 1, &p);
+              if (*p != ':')
+                  return -EINVAL;
+
+              if (align < SMP_CACHE_BYTES)
+                  align = SMP_CACHE_BYTES;
+
+              name = p + 1;
+              len = strlen(name);
+
+              if (!len || len >= RESERVE_MEM_NAME_SIZE)
+                  return -EINVAL;
+
+              for (p = name; *p; p++) {
+                  if (!isspace(*p))
+                      break;
+              }
+              if (!*p)
+                  return -EINVAL;
+
+              if (reserve_mem_find_by_name(name, &start, &tmp))
+                  return -EBUSY;
+
+              start = memblock_phys_alloc(size, align);
+              if (!start)
+                  return -ENOMEM;
+
+              reserved_mem_add(start, size, name);
+              return 1;
+          }
+          __setup("reserve_mem=", reserve_mem);
+          '''
+
+          memblock_text = memblock.read_text()
+          memblock_anchor = "\n#if defined(CONFIG_DEBUG_FS) && defined(CONFIG_ARCH_KEEP_MEMBLOCK)"
+          if "reserve_mem_find_by_name" not in memblock_text:
+              if memblock_anchor not in memblock_text:
+                  raise SystemExit("memblock.c anchor not found")
+              memblock_text = memblock_text.replace(
+                  memblock_anchor,
+                  "\n" + reserve_code.strip("\n") + "\n" + memblock_anchor,
+                  1,
+              )
+              memblock.write_text(memblock_text)
+
+          mmh_text = mmh.read_text()
+          mmh_anchor = "\n#endif /* _LINUX_MM_H */"
+          if "int reserve_mem_find_by_name" not in mmh_text:
+              if mmh_anchor not in mmh_text:
+                  raise SystemExit("include/linux/mm.h anchor not found")
+              mmh_text = mmh_text.replace(
+                  mmh_anchor,
+                  "\nint reserve_mem_find_by_name(const char *name, phys_addr_t *start, phys_addr_t *size);\n" + mmh_anchor,
+                  1,
+              )
+              mmh.write_text(mmh_text)
+
+          ram_text = ramc.read_text()
+          param_anchor = '''static unsigned long long mem_address;
+          module_param_hw(mem_address, ullong, other, 0400);
+          MODULE_PARM_DESC(mem_address,
+                  "start of reserved RAM used to store oops/panic logs");
+
+          static ulong mem_size;'''
+          param_insert = '''static unsigned long long mem_address;
+          module_param_hw(mem_address, ullong, other, 0400);
+          MODULE_PARM_DESC(mem_address,
+                  "start of reserved RAM used to store oops/panic logs");
+
+          static char *mem_name;
+          module_param_named(mem_name, mem_name, charp, 0400);
+          MODULE_PARM_DESC(mem_name, "name of kernel param that holds addr");
+
+          static ulong mem_size;'''
+          if "static char *mem_name;" not in ram_text:
+              if param_anchor not in ram_text:
+                  raise SystemExit("fs/pstore/ram.c parameter anchor not found")
+              ram_text = ram_text.replace(param_anchor, param_insert, 1)
+
+          dummy_anchor = '''static void __init ramoops_register_dummy(void)
+          {
+                  struct ramoops_platform_data pdata;
+          '''
+          dummy_insert = '''static void __init ramoops_register_dummy(void)
+          {
+                  struct ramoops_platform_data pdata;
+
+                  if (mem_name) {
+                          phys_addr_t start;
+                          phys_addr_t size;
+
+                          if (reserve_mem_find_by_name(mem_name, &start, &size)) {
+                                  mem_address = start;
+                                  mem_size = size;
+                          }
+                  }
+          '''
+          if "reserve_mem_find_by_name(mem_name" not in ram_text:
+              if dummy_anchor not in ram_text:
+                  raise SystemExit("fs/pstore/ram.c dummy anchor not found")
+              ram_text = ram_text.replace(dummy_anchor, dummy_insert, 1)
+
+          ramc.write_text(ram_text)
+          print("✅ reserve_mem + ramoops.mem_name backport inserted")
+          PY
 
           DEFCONFIG=arch/arm64/configs/gki_defconfig
 
@@ -613,7 +783,7 @@ jobs:
           echo "=== embedded crash-capture command line ==="
           grep '^CONFIG_CMDLINE=' "$DEFCONFIG"
 
-          echo "=== applied files ==="
+          echo "=== pstore backport diff ==="
           git diff --stat -- mm/memblock.c include/linux/mm.h fs/pstore/ram.c
       - name: ⚡ Setup NoMount
         run: |
