@@ -1279,19 +1279,6 @@ jobs:
           rm -rf kasumi
           git clone --depth=1 https://github.com/Rouyashiki/Kasumi.git kasumi
 
-          # CONFIG_FUNCTION_TRACER (needed by pstore ftrace) exposes
-          # arch_ftrace_get_regs() from the kernel headers. Kasumi currently
-          # defines the same macro unconditionally, which becomes a
-          # -Wmacro-redefined error with this kernel configuration.
-          if grep -q '^#define arch_ftrace_get_regs(fregs) (NULL)$' \
-              kasumi/src/core/kasumi_runtime.c; then
-            sed -i '/^#define arch_ftrace_get_regs(fregs) (NULL)$/i #ifndef arch_ftrace_get_regs' \
-              kasumi/src/core/kasumi_runtime.c
-            sed -i '/^#define arch_ftrace_get_regs(fregs) (NULL)$/a #endif' \
-              kasumi/src/core/kasumi_runtime.c
-            echo "✅ Added compatibility guard around Kasumi arch_ftrace_get_regs()"
-          fi
-
           echo "🔧 Preparing the same AOSP toolchain used for the 6.6.143 kernel..."
           export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/linux-x86/bin:$PATH"
           CLANG_DIR="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin"
