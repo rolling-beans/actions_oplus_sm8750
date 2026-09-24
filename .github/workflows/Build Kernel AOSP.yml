@@ -1288,36 +1288,6 @@ jobs:
           rm -rf kasumi
           git clone --depth=1 https://github.com/Rouyashiki/Kasumi.git kasumi
 
-          # Kasumi keeps a 6.6+ fallback for arch_ftrace_get_regs, but its
-          # fallback currently appears before <linux/kprobes.h>, which imports
-          # <linux/ftrace.h> and defines the arm64 kernel macro. With
-          # CONFIG_FUNCTION_TRACER=y this becomes a macro redefinition error.
-          # Move Kasumi's guarded fallback below the kernel headers instead of
-          # changing the fallback itself; when the kernel provides the macro,
-          # Kasumi uses the kernel implementation, otherwise its NULL fallback
-          # remains available.
-          python3 - <<'PYEOF'
-          from pathlib import Path
-
-          p = Path("kasumi/src/core/kasumi_runtime.c")
-          s = p.read_text()
-          old = '''#include <linux/version.h>
-          #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0) && !defined(arch_ftrace_get_regs)
-          #define arch_ftrace_get_regs(fregs) (NULL)
-          #endif
-          #include <linux/kprobes.h>'''
-          new = '''#include <linux/version.h>
-          #include <linux/kprobes.h>
-          #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0) && !defined(arch_ftrace_get_regs)
-          #define arch_ftrace_get_regs(fregs) (NULL)
-          #endif'''
-          if old not in s:
-              raise SystemExit("Kasumi ftrace compatibility block not found")
-          p.write_text(s.replace(old, new, 1))
-          PYEOF
-
-          echo "✅ Kasumi ftrace compatibility block ordered after kernel ftrace headers"
-
           echo "🔧 Preparing the same AOSP toolchain used for the 6.6.143 kernel..."
           export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/linux-x86/bin:$PATH"
           CLANG_DIR="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin"
