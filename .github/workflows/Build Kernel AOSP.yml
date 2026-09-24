@@ -155,12 +155,7 @@ on:
         type: boolean
         default: false
 
-      kasumi_enable:
-        description: 'Build Kasumi LKM against the prepared kernel (optional)'
-        required: true
-        type: boolean
-        default: false
-
+      
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -1277,7 +1272,7 @@ jobs:
           df -h
 
       - name: 🧩 Build Kasumi LKM
-        if: inputs.kasumi_enable
+        if: inputs.pstore_debug == false
         run: |
           set -e
           cd $GITHUB_WORKSPACE/kernel_workspace
@@ -1455,7 +1450,7 @@ jobs:
           zip -z ../$AK3_NAME < ./ak3.log
 
       - name: 📤 Upload Kasumi LKM
-        if: inputs.kasumi_enable
+        if: inputs.pstore_debug == false
         uses: actions/upload-artifact@v4
         with:
           name: kasumi-lkm-${{ env.KERNEL_FULL_VERSION }}
