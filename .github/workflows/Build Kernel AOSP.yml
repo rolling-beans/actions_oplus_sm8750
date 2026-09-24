@@ -770,9 +770,9 @@ jobs:
           extra = (
               "reserve_mem=8M:4096:vpnhide_pstore"
               " ramoops.mem_name=vpnhide_pstore"
-              " ramoops.record_size=1M"
-              " ramoops.console_size=1M"
-              " ramoops.pmsg_size=1M"
+              " ramoops.record_size=1048576"
+              " ramoops.console_size=1048576"
+              " ramoops.pmsg_size=1048576"
               " ramoops.dump_oops=1"
           )
           for token in extra.split():
