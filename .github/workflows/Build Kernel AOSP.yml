@@ -791,6 +791,7 @@ jobs:
           echo "=== pstore backport verification ==="
           grep -n -E 'reserve_mem_find_by_name|__setup\("reserve_mem=|mem_name|CONFIG_PSTORE|reserve_mem=8M|ramoops\.mem_name' \
             mm/memblock.c include/linux/mm.h fs/pstore/ram.c "$DEFCONFIG" || true
+
       - name: ⚡ Setup NoMount
         run: |
           cd kernel_workspace/common
@@ -854,7 +855,18 @@ jobs:
             find . -name '*.rej' -print
             exit 1
           fi
-            
+
+      - name: Apply LZ4KD Patch
+        if: inputs.lz4kd_enable
+        run: |
+          echo "Adding LZ4KD patch..."
+          cd kernel_workspace/common
+          cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./include/linux/
+          cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./lib
+          cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./crypto
+          cp ../SukiSU_patch/other/zram/zram_patch/${{ env.KERNEL_VERSION }}/lz4kd.patch ./
+          patch -p1 -F 3 < lz4kd.patch
+          
       - name: Configure ZRAM Writeback
         if: inputs.zram_writeback
         working-directory: kernel_workspace
