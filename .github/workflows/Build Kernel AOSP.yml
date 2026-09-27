@@ -240,8 +240,31 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-          curl -sSL "https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT" \
-            | tr -d '\r\n' | base64 -d -i > $GITHUB_WORKSPACE/kernel.afdo
+          echo "Downloading AFDO profile..."
+          
+          AFDO_B64="$GITHUB_WORKSPACE/kernel.afdo.b64"
+          AFDO_OUT="$GITHUB_WORKSPACE/kernel.afdo"
+          
+          rm -f "$AFDO_B64" "$AFDO_OUT"
+          
+          curl -fL \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 3 \
+            --connect-timeout 30 \
+            --max-time 600 \
+            "https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT" \
+            -o "$AFDO_B64"
+          
+          echo "AFDO encoded size: $(wc -c < "$AFDO_B64") bytes"
+          
+          tr -d '\r\n' < "$AFDO_B64" | base64 -d -i > "$AFDO_OUT"
+          
+          test -s "$AFDO_OUT"
+          
+          echo "AFDO decoded size: $(wc -c < "$AFDO_OUT") bytes"
+          
+          rm -f "$AFDO_B64"
 
           echo "Source and tools initialized successfully!"
 
