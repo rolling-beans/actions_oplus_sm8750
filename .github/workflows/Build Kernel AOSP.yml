@@ -799,31 +799,29 @@ jobs:
           p = Path("drivers/regulator/qti-ocp-notifier.c")
           s = p.read_text()
 
-          anchor = """\tentry->ppid = (((u16)buf[i] << 4) & 0xF00) | buf[i + 1];
-\tentry->mode_at_ocp = buf[i] & 0x7;
+          needle = (
+              "\\tentry->ppid = (((u16)buf[i] << 4) & 0xF00) | buf[i + 1];\\n"
+              "\\tentry->mode_at_ocp = buf[i] & 0x7;\\n\\n"
+              "\\tkfree(buf);"
+          )
 
-\tkfree(buf);"""
-
-          replacement = """\tentry->ppid = (((u16)buf[i] << 4) & 0xF00) | buf[i + 1];
-\tentry->mode_at_ocp = buf[i] & 0x7;
-
-\tif (log_info == &ocp_dev->alarm && index == 0 && len >= 6)
-\t\tpr_info_ratelimited(
-\t\t\t"Regulator alarm raw: %02x %02x %02x %02x %02x %02x "
-\t\t\t"(ppid=0x%03X mode=%u)\\n",
-\t\t\tbuf[0], buf[1], buf[2], buf[3], buf[4], buf[5],
-\t\t\tentry->ppid, entry->mode_at_ocp);
-
-\tkfree(buf);"""
+          debug = (
+              "\\tif (log_info == &ocp_dev->alarm && index == 0 && len >= 6)\\n"
+              "\\t\\tpr_info_ratelimited(\\n"
+              "\\t\\t\\t\"Regulator alarm raw: %02x %02x %02x %02x %02x %02x \"\\n"
+              "\\t\\t\\t\"(ppid=0x%03X mode=%u)\\\\n\",\\n"
+              "\\t\\t\\tbuf[0], buf[1], buf[2], buf[3], buf[4], buf[5],\\n"
+              "\\t\\t\\tentry->ppid, entry->mode_at_ocp);\\n\\n"
+          )
 
           if "Regulator alarm raw:" in s:
               print("✅ Regulator alarm raw diagnostic already present")
+          elif needle not in s:
+              raise SystemExit(
+                  "qti-ocp-notifier.c anchor not found; refusing to patch"
+              )
           else:
-              if anchor not in s:
-                  raise SystemExit(
-                      "qti-ocp-notifier.c anchor not found; refusing to patch"
-                  )
-              s = s.replace(anchor, replacement, 1)
+              s = s.replace(needle, needle[:-len("\\tkfree(buf);")] + debug + "\\tkfree(buf);", 1)
               p.write_text(s)
               print("✅ Added rate-limited raw alarm_log dump to qti-ocp-notifier.c")
           PY
