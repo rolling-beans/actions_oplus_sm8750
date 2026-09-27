@@ -821,10 +821,12 @@ jobs:
 
           if [ -n "$QTI_OCP_SRC" ]; then
             echo "Found: $QTI_OCP_SRC"
+            export QTI_OCP_SRC
             python3 - <<'PY'
+          import os
           from pathlib import Path
 
-          p = Path("$QTI_OCP_SRC")
+          p = Path(os.environ["QTI_OCP_SRC"])
           s = p.read_text()
 
           marker = 'Regulator alarm raw:'
