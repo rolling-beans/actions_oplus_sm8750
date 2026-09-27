@@ -13,11 +13,14 @@ env:
   KERNEL_FULL_VERSION: '6.6.143'
 
 on:
+  push:
+    branches:
+      - master
   workflow_dispatch:
     inputs:
       ksu_type:
         description: 'KernelSU variant'
-        required: true
+        required: false
         type: choice
         default: 'ReSukiSU'
         options:
@@ -27,22 +30,22 @@ on:
           - 'KernelSU Next'
       SUSFS:
         description: 'Enable SuSFS (Enhances hide environment)'
-        required: true
+        required: false
         type: boolean
         default: true
       lz4_enable:
         description: 'Install LZ4 1.10.0 + ZSTD 1.5.7 Patch'
-        required: true
+        required: false
         type: boolean
         default: true
       lz4kd_enable:
         description: 'Install LZ4KD Patch (ZRAM optimization)'
-        required: true
+        required: false
         type: boolean
         default: true
       bbr_enable:
         description: "Enable TCP BBR/Brutal (false=off, true=add, default=set as default)"
-        required: true
+        required: false
         type: choice
         default: 'default'
         options:
@@ -51,22 +54,22 @@ on:
           - 'default'
       adios_enable:
         description: 'Enable ADIOS IO Scheduler (Improves IO read/write performance)'
-        required: true
+        required: false
         type: boolean
         default: true
       rekernel_enable:
         description: 'Enable Re-Kernel Support (Enhances app freezing via NoActive/Freezer)'
-        required: true
+        required: false
         type: boolean
         default: true
       baseband_guard:
         description: 'Enable Baseband Guard (Anti-brick modem protection)'
-        required: true
+        required: false
         type: boolean
         default: true
       lto_type:
         description: 'LTO Optimization (none = fast compile, thin = default, full = slow)'
-        required: true
+        required: false
         type: choice
         default: 'thin'
         options:
@@ -75,89 +78,98 @@ on:
           - 'full'
       fengchi:
         description: 'Enable Fengchi / HMBIRD Optimization'
-        required: true
+        required: false
         type: boolean
         default: true
       bore_enable:
         description: 'Enable BORE Scheduler (Burst-Oriented Response Enhancer, off by default)'
-        required: true
+        required: false
         type: boolean
         default: true
       zram_writeback:
         description: 'Enable ZRAM Writeback (better memory management)'
-        required: true
+        required: false
         type: boolean
         default: false
       cpu_opt:
         description: 'CPU Optimizations (Oryon MCPU tuning for SM8750)'
-        required: true
+        required: false
         type: boolean
         default: true
       f2fs_opt:
         description: 'F2FS Optimizations (better flash storage performance)'
-        required: true
+        required: false
         type: boolean
         default: true
       wireguard:
         description: 'Enable WireGuard VPN support'
-        required: true
+        required: false
         type: boolean
         default: true
       netfilter_full:
         description: 'Full Netfilter (conntrack, NAT, hashlimit)'
-        required: true
+        required: false
         type: boolean
         default: false
       lrng_enable:
         description: 'Enable LRNG v60 (better entropy for crypto/gaming)'
-        required: true
+        required: false
         type: boolean
         default: true
       wakelock_blocker:
         description: 'Enable Wakelock Blocker (better idle battery drain)'
-        required: true
+        required: false
         type: boolean
         default: true
       github_release:
         description: 'Create GitHub Release'
-        required: true
+        required: false
         type: boolean
         default: false
       ntsync_enable:
         description: 'Enable NTSync (low-latency NT sync primitives, great for gaming/Wine)'
-        required: true
+        required: false
         type: boolean
         default: true
       droidspaces_enable:
         description: 'Enable Droidspaces (SYSVIPC + PID_NS + POSIX_MQUEUE for proot-distro)'
-        required: true
+        required: false
         type: boolean
         default: true
       ip_set_enable:
         description: 'Enable IP_SET + IPv6 NAT (advanced firewall + IPv6 masquerade)'
-        required: true
+        required: false
         type: boolean
         default: true
       ttl_enable:
         description: 'Enable TTL/HL Target (hide tethering from carrier detection)'
-        required: true
+        required: false
         type: boolean
         default: true
       mem_opt_patches:
         description: 'Enable memory/scheduler optimization patches (from WildKernels)'
-        required: true
+        required: false
         type: boolean
         default: true
 
       pstore_debug:
         description: 'Enable experimental pstore/ramoops crash capture (reserves 8 MiB RAM)'
-        required: true
+        required: false
         type: boolean
         default: false
 
       
 jobs:
+  push-guard:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Workflow push event guard
+        run: |
+          echo "Push event detected. Kernel build is manual-only; skipping build."
+
   build:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       ksuver: ${{ steps.ksu_version.outputs.ksuver }}
@@ -1775,6 +1787,7 @@ jobs:
 
   release:
     needs: build
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
