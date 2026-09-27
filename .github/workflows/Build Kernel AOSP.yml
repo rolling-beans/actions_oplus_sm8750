@@ -897,20 +897,20 @@ jobs:
           s = p.read_text()
 
           needle = """int regulator_notifier_call_chain(struct regulator_dev *rdev,
-				  unsigned long event, void *data)
-{
-	_notifier_call_chain(rdev, event, data);
-"""
+          				  unsigned long event, void *data)
+          {
+          	_notifier_call_chain(rdev, event, data);
+          """
           debug = """int regulator_notifier_call_chain(struct regulator_dev *rdev,
-				  unsigned long event, void *data)
-{
-	if (event & REGULATOR_EVENT_UNDER_VOLTAGE)
-		pr_info_ratelimited(
-			"Regulator under-voltage notification: %s event=0x%lx\\n",
-			rdev_get_name(rdev), event);
+          				  unsigned long event, void *data)
+          {
+          	if (event & REGULATOR_EVENT_UNDER_VOLTAGE)
+          		pr_info_ratelimited(
+          			"Regulator under-voltage notification: %s event=0x%lx\\n",
+          			rdev_get_name(rdev), event);
 
-	_notifier_call_chain(rdev, event, data);
-"""
+          	_notifier_call_chain(rdev, event, data);
+          """
 
           if "Regulator under-voltage notification:" in s:
               print("✅ Regulator core diagnostic already present")
