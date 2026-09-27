@@ -815,39 +815,77 @@ jobs:
           grep -n -E 'reserve_mem_find_by_name|__setup\("reserve_mem=|mem_name|CONFIG_PSTORE|reserve_mem=8M|ramoops\.mem_name' \
             mm/memblock.c include/linux/mm.h fs/pstore/ram.c "$DEFCONFIG" || true
 
-          echo "=== Regulator alarm raw diagnostic patch ==="
-          python3 - <<'PY'
+          echo "=== Regulator alarm delivery diagnostic ==="
+          echo "Looking for qti-ocp-notifier.c in the actual source tree..."
+          QTI_OCP_SRC=$(find . -type f -name 'qti-ocp-notifier.c' -print -quit)
+
+          if [ -n "$QTI_OCP_SRC" ]; then
+            echo "Found: $QTI_OCP_SRC"
+            python3 - <<'PY'
           from pathlib import Path
 
-          p = Path("drivers/regulator/qti-ocp-notifier.c")
+          p = Path("$QTI_OCP_SRC")
           s = p.read_text()
 
+          marker = 'Regulator alarm raw:'
           needle = (
-              "\\tentry->ppid = (((u16)buf[i] << 4) & 0xF00) | buf[i + 1];\\n"
-              "\\tentry->mode_at_ocp = buf[i] & 0x7;\\n\\n"
-              "\\tkfree(buf);"
+              "entry->ppid = (((u16)buf[i] << 4) & 0xF00) | buf[i + 1];\n"
+              "entry->mode_at_ocp = buf[i] & 0x7;\n\n"
           )
-
           debug = (
-              "\\tif (log_info == &ocp_dev->alarm && index == 0 && len >= 6)\\n"
-              "\\t\\tpr_info_ratelimited(\\n"
-              "\\t\\t\\t\"Regulator alarm raw: %02x %02x %02x %02x %02x %02x \"\\n"
-              "\\t\\t\\t\"(ppid=0x%03X mode=%u)\\\\n\",\\n"
-              "\\t\\t\\tbuf[0], buf[1], buf[2], buf[3], buf[4], buf[5],\\n"
-              "\\t\\t\\tentry->ppid, entry->mode_at_ocp);\\n\\n"
+              "\tif (log_info == &ocp_dev->alarm && index == 0 && len >= 6)\n"
+              "\t\tpr_info_ratelimited(\n"
+              "\t\t\t\"Regulator alarm raw: %02x %02x %02x %02x %02x %02x \"\n"
+              "\t\t\t\"(ppid=0x%03X mode=%u)\\n\",\n"
+              "\t\t\tbuf[0], buf[1], buf[2], buf[3], buf[4], buf[5],\n"
+              "\t\t\tentry->ppid, entry->mode_at_ocp);\n\n"
           )
 
-          if "Regulator alarm raw:" in s:
-              print("✅ Regulator alarm raw diagnostic already present")
+          if marker in s:
+              print("✅ Raw alarm diagnostic already present")
           elif needle not in s:
-              raise SystemExit(
-                  "qti-ocp-notifier.c anchor not found; refusing to patch"
-              )
+              raise SystemExit("qti-ocp-notifier.c anchor not found; refusing to patch")
           else:
-              s = s.replace(needle, needle[:-len("\\tkfree(buf);")] + debug + "\\tkfree(buf);", 1)
+              s = s.replace(needle, needle + debug, 1)
               p.write_text(s)
-              print("✅ Added rate-limited raw alarm_log dump to qti-ocp-notifier.c")
+              print("✅ Added raw alarm_log diagnostic")
           PY
+          else
+            echo "⚠️ qti-ocp-notifier.c is not present in this source tree."
+            echo "Falling back to regulator core event tracing."
+            python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("drivers/regulator/core.c")
+          s = p.read_text()
+
+          needle = """int regulator_notifier_call_chain(struct regulator_dev *rdev,
+				  unsigned long event, void *data)
+{
+	_notifier_call_chain(rdev, event, data);
+"""
+          debug = """int regulator_notifier_call_chain(struct regulator_dev *rdev,
+				  unsigned long event, void *data)
+{
+	if (event & REGULATOR_EVENT_UNDER_VOLTAGE)
+		pr_info_ratelimited(
+			"Regulator under-voltage notification: %s event=0x%lx\\n",
+			rdev_get_name(rdev), event);
+
+	_notifier_call_chain(rdev, event, data);
+"""
+
+          if "Regulator under-voltage notification:" in s:
+              print("✅ Regulator core diagnostic already present")
+          elif needle not in s:
+              raise SystemExit("drivers/regulator/core.c anchor not found; refusing to patch")
+          else:
+              s = s.replace(needle, debug, 1)
+              p.write_text(s)
+              print("✅ Added regulator UNDER_VOLTAGE event diagnostic")
+          PY
+          fi
+
 
       - name: ⚡ Setup NoMount
         run: |
