@@ -888,17 +888,20 @@ jobs:
           	size_t raw_len = 0;
           	u8 *raw_alarm = nvmem_cell_read(ocp_dev->alarm.nvmem_cell, &raw_len);
 
-          	if (!IS_ERR(raw_alarm)) {
-          		if (raw_len >= 6) {
-          			pr_err_ratelimited(
-          				"Regulator alarm RAW6: %02x %02x %02x %02x %02x %02x\\n",
-          				raw_alarm[0], raw_alarm[1], raw_alarm[2],
-          				raw_alarm[3], raw_alarm[4], raw_alarm[5]);
-          		} else {
-          			pr_err_ratelimited(
-          				"Regulator alarm RAW6: invalid len=%zu\\n",
-          				raw_len);
-          		}
+          	if (IS_ERR(raw_alarm)) {
+          		pr_err_ratelimited(
+          			"Regulator alarm RAW6: nvmem_cell_read failed ret=%ld\\n",
+          			PTR_ERR(raw_alarm));
+          	} else if (raw_len >= 6) {
+          		pr_err_ratelimited(
+          			"Regulator alarm RAW6: %02x %02x %02x %02x %02x %02x len=%zu\\n",
+          			raw_alarm[0], raw_alarm[1], raw_alarm[2],
+          			raw_alarm[3], raw_alarm[4], raw_alarm[5], raw_len);
+          		kfree(raw_alarm);
+          	} else {
+          		pr_err_ratelimited(
+          			"Regulator alarm RAW6: invalid len=%zu\\n",
+          			raw_len);
           		kfree(raw_alarm);
           	}
           """
