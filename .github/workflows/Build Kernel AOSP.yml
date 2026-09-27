@@ -240,29 +240,52 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-          echo "Downloading AFDO profile..."
-          
+          echo "Downloading optional AFDO profile..."
           AFDO_B64="$GITHUB_WORKSPACE/kernel.afdo.b64"
           AFDO_OUT="$GITHUB_WORKSPACE/kernel.afdo"
+          AFDO_CFLAGS=""
           
           rm -f "$AFDO_B64" "$AFDO_OUT"
           
-          curl -fL \
-            --retry 5 \
-            --retry-all-errors \
-            --retry-delay 3 \
-            --connect-timeout 30 \
-            --max-time 600 \
-            "https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT" \
-            -o "$AFDO_B64"
+          AFDO_URLS=(
+            "https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT"
+            "https://android.git.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT"
+          )
           
-          echo "AFDO encoded size: $(wc -c < "$AFDO_B64") bytes"
+          for AFDO_URL in "${AFDO_URLS[@]}"; do
+            echo "Trying AFDO source: $AFDO_URL"
+            if curl -fL \
+              --retry 3 \
+              --retry-all-errors \
+              --retry-delay 2 \
+              --connect-timeout 20 \
+              --max-time 180 \
+              "$AFDO_URL" \
+              -o "$AFDO_B64"; then
+                
+              echo "AFDO encoded size: $(wc -c < "$AFDO_B64") bytes"
+              
+              if tr -d '\r\n' < "$AFDO_B64" | base64 -d -i > "$AFDO_OUT" 2>/dev/null \
+                && test -s "$AFDO_OUT"; then
+                echo "AFDO decoded size: $(wc -c < "$AFDO_OUT") bytes"
+                AFDO_CFLAGS="-fprofile-sample-use=$AFDO_OUT"
+                break
+              fi
+              
+              echo "AFDO response was not valid base64/profile, trying next source..."
+              rm -f "$AFDO_OUT"
+            else
+              echo "AFDO source unavailable (possibly 401/403/503), trying next source..."
+            fi
+          done
           
-          tr -d '\r\n' < "$AFDO_B64" | base64 -d -i > "$AFDO_OUT"
-          
-          test -s "$AFDO_OUT"
-          
-          echo "AFDO decoded size: $(wc -c < "$AFDO_OUT") bytes"
+          if [ -n "$AFDO_CFLAGS" ]; then
+            echo "AFDO_CFLAGS=$AFDO_CFLAGS" >> "$GITHUB_ENV"
+            echo "✅ AFDO enabled"
+          else
+            echo "AFDO_CFLAGS=" >> "$GITHUB_ENV"
+            echo "⚠️ AFDO unavailable; continuing without AFDO optimization"
+          fi
           
           rm -f "$AFDO_B64"
 
@@ -1365,7 +1388,7 @@ jobs:
           make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC="ccache clang" LD="$(pwd)/ld-wrapper" HOSTLD="$(pwd)/ld-wrapper" \
             O=$GITHUB_WORKSPACE/kout \
-            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option -fprofile-sample-use=$GITHUB_WORKSPACE/kernel.afdo ${EXTRA_CFLAGS:-} ${MAP}" \
+            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option ${AFDO_CFLAGS:-} ${EXTRA_CFLAGS:-} ${MAP}" \
             Image 2>&1 | tee -a /tmp/kbuild.log
 
           echo "Kernel Compilation Complete!"
