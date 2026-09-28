@@ -252,12 +252,43 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-          echo "Downloading optional AFDO profile..."
+          echo "Downloading optional AFDO profile (authenticated)..."
           AFDO_B64="$GITHUB_WORKSPACE/kernel.afdo.b64"
           AFDO_OUT="$GITHUB_WORKSPACE/kernel.afdo"
           AFDO_CFLAGS=""
+          AFDO_ACCESS_TOKEN=""
           
           rm -f "$AFDO_B64" "$AFDO_OUT"
+          
+          if [ -n "${GOOGLE_CLIENT_ID:-}" ] && [ -n "${GOOGLE_CLIENT_SECRET:-}" ] && [ -n "${GOOGLE_REFRESH_TOKEN:-}" ]; then
+            echo "Refreshing Google OAuth access token..."
+            TOKEN_RESPONSE=$(curl -fsS \
+              --retry 3 \
+              --retry-all-errors \
+              --retry-delay 2 \
+              --connect-timeout 20 \
+              --max-time 60 \
+              -X POST \
+              -H "Content-Type: application/x-www-form-urlencoded" \
+              --data-urlencode "client_id=$GOOGLE_CLIENT_ID" \
+              --data-urlencode "client_secret=$GOOGLE_CLIENT_SECRET" \
+              --data-urlencode "refresh_token=$GOOGLE_REFRESH_TOKEN" \
+              --data-urlencode "grant_type=refresh_token" \
+              "https://oauth2.googleapis.com/token")
+            
+            AFDO_ACCESS_TOKEN=$(printf '%s' "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
+            unset TOKEN_RESPONSE
+            
+            if [ -z "$AFDO_ACCESS_TOKEN" ]; then
+              echo "❌ Google OAuth token refresh succeeded at HTTP level but no access_token was returned."
+              echo "AFDO will continue without authentication."
+            else
+              echo "✅ Google OAuth access token acquired."
+            fi
+          else
+            echo "⚠️ GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN are not configured."
+            echo "AFDO will continue without authentication."
+          fi
           
           AFDO_URLS=(
             "https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT"
@@ -266,20 +297,30 @@ jobs:
           
           for AFDO_URL in "${AFDO_URLS[@]}"; do
             echo "Trying AFDO source: $AFDO_URL"
-            if curl -fL \
-              --retry 3 \
-              --retry-all-errors \
-              --retry-delay 2 \
-              --connect-timeout 20 \
-              --max-time 180 \
-              "$AFDO_URL" \
-              -o "$AFDO_B64"; then
-                
+            AFDO_CURL_ARGS=(
+              -fL
+              --retry 3
+              --retry-all-errors
+              --retry-delay 2
+              --connect-timeout 20
+              --max-time 180
+            )
+            if [ -n "$AFDO_ACCESS_TOKEN" ]; then
+              AFDO_CURL_ARGS+=( -H "Authorization: Bearer $AFDO_ACCESS_TOKEN" )
+            fi
+            
+            if curl "${AFDO_CURL_ARGS[@]}" "$AFDO_URL" -o "$AFDO_B64"; then
+              
               echo "AFDO encoded size: $(wc -c < "$AFDO_B64") bytes"
               
               if tr -d '\r\n' < "$AFDO_B64" | base64 -d -i > "$AFDO_OUT" 2>/dev/null \
                 && test -s "$AFDO_OUT"; then
                 echo "AFDO decoded size: $(wc -c < "$AFDO_OUT") bytes"
+                if [ -n "$AFDO_ACCESS_TOKEN" ]; then
+                  echo "✅ AFDO downloaded with Google OAuth authentication"
+                else
+                  echo "⚠️ AFDO downloaded without authentication"
+                fi
                 AFDO_CFLAGS="-fprofile-sample-use=$AFDO_OUT"
                 break
               fi
@@ -287,7 +328,7 @@ jobs:
               echo "AFDO response was not valid base64/profile, trying next source..."
               rm -f "$AFDO_OUT"
             else
-              echo "AFDO source unavailable (possibly 401/403/503), trying next source..."
+              echo "AFDO source unavailable with current authentication (possibly 401/403/503), trying next source..."
             fi
           done
           
@@ -299,6 +340,7 @@ jobs:
             echo "⚠️ AFDO unavailable; continuing without AFDO optimization"
           fi
           
+          unset AFDO_ACCESS_TOKEN
           rm -f "$AFDO_B64"
 
           echo "Source and tools initialized successfully!"
