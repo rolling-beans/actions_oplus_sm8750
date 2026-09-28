@@ -601,6 +601,11 @@ jobs:
           echo "CONFIG_KEYS=y" >> "$DEFCONFIG"
           echo "CONFIG_CIFS_XATTR=y" >> "$DEFCONFIG"
           echo "CONFIG_CIFS_POSIX=y" >> "$DEFCONFIG"
+          echo "CONFIG_NET_SCH_FQ=y" >> "$DEFCONFIG"
+          echo "CONFIG_NET_SCH_FQ_CODEL=y" >> "$DEFCONFIG"
+          echo "CONFIG_NET_SCH_CAKE=y" >> "$DEFCONFIG"
+          echo "CONFIG_NET_ACT_CONNMARK=y" >> "$DEFCONFIG"
+          echo "CONFIG_TCP_CONG_BIC=y" >> "$DEFCONFIG"
 
           if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
             echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG"
