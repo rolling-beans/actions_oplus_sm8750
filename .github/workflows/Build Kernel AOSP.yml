@@ -264,7 +264,9 @@ jobs:
           
           rm -f "$AFDO_B64" "$AFDO_OUT"
           
-          if [ -n "${GOOGLE_CLIENT_ID:-}" ] && [ -n "${GOOGLE_CLIENT_SECRET:-}" ] && [ -n "${GOOGLE_REFRESH_TOKEN:-}" ]; then
+          if [ -z "${GOOGLE_CLIENT_ID:-}" ] || [ -z "${GOOGLE_CLIENT_SECRET:-}" ] || [ -z "${GOOGLE_REFRESH_TOKEN:-}" ]; then
+            echo "⚠️ Google OAuth secrets are not configured; AFDO will be disabled."
+          else
             echo "Refreshing Google OAuth access token..."
             TOKEN_RESPONSE=$(curl -fsS \
               --retry 3 \
@@ -284,57 +286,45 @@ jobs:
             unset TOKEN_RESPONSE
             
             if [ -z "$AFDO_ACCESS_TOKEN" ]; then
-              echo "❌ Google OAuth token refresh succeeded at HTTP level but no access_token was returned."
-              echo "AFDO will continue without authentication."
+              echo "❌ Google OAuth token response did not contain access_token; AFDO will be disabled."
             else
+              echo "::add-mask::$AFDO_ACCESS_TOKEN"
               echo "✅ Google OAuth access token acquired."
-            fi
-          else
-            echo "⚠️ GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN are not configured."
-            echo "AFDO will continue without authentication."
-          fi
-          
-          AFDO_URLS=(
-            "https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT"
-            "https://android.git.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT"
-          )
-          
-          for AFDO_URL in "${AFDO_URLS[@]}"; do
-            echo "Trying AFDO source: $AFDO_URL"
-            AFDO_CURL_ARGS=(
-              -fL
-              --retry 3
-              --retry-all-errors
-              --retry-delay 2
-              --connect-timeout 20
-              --max-time 180
-            )
-            if [ -n "$AFDO_ACCESS_TOKEN" ]; then
-              AFDO_CURL_ARGS+=( -H "Authorization: Bearer $AFDO_ACCESS_TOKEN" )
-            fi
-            
-            if curl "${AFDO_CURL_ARGS[@]}" "$AFDO_URL" -o "$AFDO_B64"; then
               
-              echo "AFDO encoded size: $(wc -c < "$AFDO_B64") bytes"
+              AFDO_URL="https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT"
+              echo "Trying authenticated AFDO source: $AFDO_URL"
               
-              if tr -d '\r\n' < "$AFDO_B64" | base64 -d -i > "$AFDO_OUT" 2>/dev/null \
-                && test -s "$AFDO_OUT"; then
-                echo "AFDO decoded size: $(wc -c < "$AFDO_OUT") bytes"
-                if [ -n "$AFDO_ACCESS_TOKEN" ]; then
+              AFDO_HTTP_STATUS=$(curl -sS -L \
+                --retry 3 \
+                --retry-all-errors \
+                --retry-delay 2 \
+                --connect-timeout 20 \
+                --max-time 180 \
+                -H "Authorization: Bearer $AFDO_ACCESS_TOKEN" \
+                -o "$AFDO_B64" \
+                -w '%{http_code}' \
+                "$AFDO_URL" || true)
+              
+              echo "AFDO HTTP status: $AFDO_HTTP_STATUS"
+              
+              if [ "$AFDO_HTTP_STATUS" = "200" ]; then
+                echo "AFDO encoded size: $(wc -c < "$AFDO_B64") bytes"
+                
+                if tr -d '\r\n' < "$AFDO_B64" | base64 -d -i > "$AFDO_OUT" 2>/dev/null \
+                  && test -s "$AFDO_OUT"; then
+                  echo "AFDO decoded size: $(wc -c < "$AFDO_OUT") bytes"
+                  AFDO_CFLAGS="-fprofile-sample-use=$AFDO_OUT"
                   echo "✅ AFDO downloaded with Google OAuth authentication"
                 else
-                  echo "⚠️ AFDO downloaded without authentication"
+                  echo "❌ HTTP 200 received, but the response is not valid base64 AFDO data."
+                  rm -f "$AFDO_OUT"
                 fi
-                AFDO_CFLAGS="-fprofile-sample-use=$AFDO_OUT"
-                break
+              else
+                echo "❌ Authenticated AFDO download failed (HTTP $AFDO_HTTP_STATUS)."
+                rm -f "$AFDO_B64" "$AFDO_OUT"
               fi
-              
-              echo "AFDO response was not valid base64/profile, trying next source..."
-              rm -f "$AFDO_OUT"
-            else
-              echo "AFDO source unavailable with current authentication (possibly 401/403/503), trying next source..."
             fi
-          done
+          fi
           
           if [ -n "$AFDO_CFLAGS" ]; then
             echo "AFDO_CFLAGS=$AFDO_CFLAGS" >> "$GITHUB_ENV"
@@ -346,7 +336,7 @@ jobs:
           
           unset AFDO_ACCESS_TOKEN
           rm -f "$AFDO_B64"
-
+          
           echo "Source and tools initialized successfully!"
 
       - name: Cache ccache-ECS binary
