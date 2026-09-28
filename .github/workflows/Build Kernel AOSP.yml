@@ -931,9 +931,9 @@ jobs:
               raise SystemExit(0)
 
           func_re = re.compile(
-              r"(?P<header>void \\*nvmem_cell_read\\(struct nvmem_cell \\*cell, size_t \\*len\\)\\n\\{)"
+              r"(?P<header>void \*nvmem_cell_read\(struct nvmem_cell \*cell, size_t \*len\)\n\{)"
               r"(?P<body>.*?)"
-              r"(?P<export>\\nEXPORT_SYMBOL_GPL\\(nvmem_cell_read\\);)",
+              r"(?P<export>\nEXPORT_SYMBOL_GPL\(nvmem_cell_read\);)",
               re.S,
           )
 
@@ -943,27 +943,26 @@ jobs:
 
           body = m.group("body")
 
-          ret_re = re.compile(r"\\n(?P<indent>[ \\t]+)return buf;\\n(?P<brace>[ \\t]*\\})$")
+          ret_re = re.compile(r"\n(?P<indent>[ \t]+)return buf;\n(?P<brace>[ \t]*\})$")
           rm = ret_re.search(body)
           if not rm:
               raise SystemExit("nvmem_cell_read() return buf anchor not found; refusing to patch")
 
-          indent = rm.group("indent")
-          debug = f"""
-          {indent}if (cell->id && !strcmp(cell->id, "alarm_log")) {{
-          {indent}\\tif (len && *len >= 6) {{
-          {indent}\\t\\tpr_err_ratelimited(
-          {indent}\\t\\t\\t"Regulator alarm NVMEM RAW6: id=%s len=%zu "
-          {indent}\\t\\t\\t"bytes=%02x %02x %02x %02x %02x %02x\\\\n",
-          {indent}\\t\\t\\tcell->id, *len,
-          {indent}\\t\\t\\tbuf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
-          {indent}\\t}} else {{
-          {indent}\\t\\tpr_err_ratelimited(
-          {indent}\\t\\t\\t"Regulator alarm NVMEM RAW6: unexpected len=%zu id=%s\\\\n",
-          {indent}\\t\\t\\tlen ? *len : 0, cell->id);
-          {indent}\\t}}
-          {indent}}}
-          """
+          debug = (
+              "\n\tif (cell->id && !strcmp(cell->id, \"alarm_log\")) {\n"
+              "\t\tif (len && *len >= 6) {\n"
+              "\t\t\tpr_err_ratelimited(\n"
+              "\t\t\t\t\"Regulator alarm NVMEM RAW6: id=%s len=%zu \"\n"
+              "\t\t\t\t\"bytes=%02x %02x %02x %02x %02x %02x\\n\",\n"
+              "\t\t\t\tcell->id, *len,\n"
+              "\t\t\t\tbuf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);\n"
+              "\t\t} else {\n"
+              "\t\t\tpr_err_ratelimited(\n"
+              "\t\t\t\t\"Regulator alarm NVMEM RAW6: unexpected len=%zu id=%s\\n\",\n"
+              "\t\t\t\tlen ? *len : 0, cell->id);\n"
+              "\t\t}\n"
+              "\t}\n"
+          )
 
           body = body[:rm.start()] + debug + body[rm.start():]
           s = s[:m.start("body")] + body + s[m.end("body"):]
