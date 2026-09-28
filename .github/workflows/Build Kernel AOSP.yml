@@ -86,8 +86,8 @@ on:
         required: false
         type: boolean
         default: true
-      zram_writeback:
-        description: 'Enable ZRAM Writeback (better memory management)'
+      bpf_stack_enable:
+        description: 'Enable BTF + eBPF + FUSE-BPF support'
         required: false
         type: boolean
         default: false
@@ -595,6 +595,12 @@ jobs:
           esac
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
+          echo "CONFIG_CIFS=y" >> "$DEFCONFIG"
+          echo "CONFIG_NETWORK_FILESYSTEMS=y" >> "$DEFCONFIG"
+          echo "CONFIG_NETFS_SUPPORT=y" >> "$DEFCONFIG"
+          echo "CONFIG_KEYS=y" >> "$DEFCONFIG"
+          echo "CONFIG_CIFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_CIFS_POSIX=y" >> "$DEFCONFIG"
 
           if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
             echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG"
@@ -609,6 +615,20 @@ jobs:
           echo "CONFIG_HEADERS_INSTALL=n" >> "$DEFCONFIG"
 
           echo "CONFIG_LLVM_POLLY=y" >> "$DEFCONFIG"
+          if [[ "${{ inputs.bpf_stack_enable }}" == "true" ]]; then
+            echo "📦 Enabling BTF/eBPF/FUSE-BPF stack..."
+            echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG"
+            echo "CONFIG_BPF_EVENTS=y" >> "$DEFCONFIG"
+            echo "CONFIG_KPROBE_EVENTS=y" >> "$DEFCONFIG"
+            echo "CONFIG_UPROBES=y" >> "$DEFCONFIG"
+            echo "CONFIG_UPROBE_EVENTS=y" >> "$DEFCONFIG"
+            echo "CONFIG_FUSE_FS=y" >> "$DEFCONFIG"
+            echo "CONFIG_BPF_SYSCALL=y" >> "$DEFCONFIG"
+            echo "CONFIG_FUSE_BPF=y" >> "$DEFCONFIG"
+          else
+            echo "BTF/eBPF/FUSE-BPF stack disabled"
+          fi
+
           echo "CONFIG_LD_DEAD_CODE_DATA_ELIMINATION=y" >> "$DEFCONFIG"
 
           if [ "${{ github.event.inputs.SUSFS }}" == "true" ]; then
@@ -1086,16 +1106,6 @@ jobs:
           cp ../SukiSU_patch/other/zram/zram_patch/${{ env.KERNEL_VERSION }}/lz4kd.patch ./
           patch -p1 -F 3 < lz4kd.patch
           
-      - name: Configure ZRAM Writeback
-        if: inputs.zram_writeback
-        working-directory: kernel_workspace
-        run: |
-          echo "Enabling ZRAM Writeback support..."
-          cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
-          CONFIG_ZRAM_WRITEBACK=y
-          CONFIG_ZRAM_MEMORY_TRACKING=y
-          EOF
-
       - name: ⚙️ Configure Fengchi (HMBIRD)
         working-directory: kernel_workspace/common
         run: |
@@ -1714,7 +1724,7 @@ jobs:
           export TG_HMBIRD="false"
           export TG_UFIX="true"
           export TG_BORE="${{ github.event.inputs.bore_enable }}"
-          export TG_ZWB="${{ github.event.inputs.zram_writeback }}"
+          export TG_BPF="${{ github.event.inputs.bpf_stack_enable }}"
           export TG_CLANG="clang-r563880c"
           export TG_CPU_OPT="${{ github.event.inputs.cpu_opt }}"
           export TG_F2FS="${{ github.event.inputs.f2fs_opt }}"
@@ -1764,7 +1774,7 @@ jobs:
                   feat(e("TG_FENGCHI"),"Fengchi Optimization"),
                   feat(e("TG_UFIX"),    "Unicode Bypass Fix"),
                   feat(e("TG_BORE"),    "BORE Scheduler (EEVDF burst enhancer)"),
-                  feat(e("TG_ZWB"),     "ZRAM Writeback"),
+                  feat(e("TG_BPF"),     "BTF + eBPF + FUSE-BPF"),
                   feat(e("TG_CPU_OPT"),"Oryon CPU Optimizations"),
                   feat(e("TG_F2FS"),   "F2FS Optimizations"),
                   feat(e("TG_WG"),     "WireGuard VPN kernel level support"),
@@ -1922,7 +1932,7 @@ jobs:
           - **Multi-Manager:** true
           - **LZ4:** ${{ github.event.inputs.lz4_enable }}
           - **LZ4KD:** ${{ github.event.inputs.lz4kd_enable }}
-          - **ZRAM Writeback:** ${{ github.event.inputs.zram_writeback }}
+          - **BTF + eBPF + FUSE-BPF:** ${{ github.event.inputs.bpf_stack_enable }}
           - **BBR/Brutal:** ${{ github.event.inputs.bbr_enable }}
           - **BBRv3:** true (stock)
           - **ADIOS IO:** ${{ github.event.inputs.adios_enable }}
