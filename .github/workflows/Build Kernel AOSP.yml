@@ -201,6 +201,10 @@ jobs:
           key: codelinaro-build-tools-ks-kernel-lnx-4.0
 
       - name: Install dependencies & Init Source
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
         run: |
           echo "Relocating heavy folders for background deletion..."
           sudo mv /usr/share/dotnet /usr/share/dotnet_trash 2>/dev/null || true
