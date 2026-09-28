@@ -942,25 +942,30 @@ jobs:
           	return buf;
           }"""
 
-          debug_tail = """	if (rc) {
-          	if (cell->id && !strcmp(cell->id, "alarm_log"))
-          		pr_err_ratelimited(
-          			"Regulator alarm NVMEM RAW6: read failed id=%s ret=%d\\n",
-          			cell->id, rc);
-          	kfree(buf);
-          	return ERR_PTR(rc);
-          	}
+          debug_tail = """\trc = __nvmem_cell_read(nvmem, cell->entry, buf, len, cell->id, cell->index);
+          \tif (rc) {
+          \t\tif (cell->id && !strcmp(cell->id, "alarm_log"))
+          \t\t\tpr_err_ratelimited(
+          \t\t\t\t"Regulator alarm NVMEM RAW6: read failed id=%s ret=%d\\n",
+          \t\t\t\tcell->id, rc);
+          \t\tkfree(buf);
+          \t\treturn ERR_PTR(rc);
+          \t}
 
-          	if (cell->id && !strcmp(cell->id, "alarm_log") &&
-          	    len && *len >= 6) {
-          		pr_err_ratelimited(
-          			"Regulator alarm NVMEM RAW6: dev=%s id=%s len=%zu "
-          			"bytes=%02x %02x %02x %02x %02x %02x\\n",
-          			nvmem_dev_name(nvmem), cell->id, *len,
-          			buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
-          	}
+          \tif (cell->id && !strcmp(cell->id, "alarm_log") &&
+          \t    len && *len >= 6) {
+          \t\tpr_err_ratelimited(
+          \t\t\t"Regulator alarm NVMEM RAW6: id=%s len=%zu "
+          \t\t\t"bytes=%02x %02x %02x %02x %02x %02x\\n",
+          \t\t\tcell->id, *len,
+          \t\t\tbuf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
+          \t} else if (cell->id && !strcmp(cell->id, "alarm_log")) {
+          \t\tpr_err_ratelimited(
+          \t\t\t"Regulator alarm NVMEM RAW6: unexpected len=%zu id=%s\\n",
+          \t\t\tlen ? *len : 0, cell->id);
+          \t}
 
-          	return buf;
+          \treturn buf;
           }"""
 
           if marker in s:
