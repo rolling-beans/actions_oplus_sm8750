@@ -916,42 +916,68 @@ jobs:
             echo "=== alarm implementation verification ==="
             grep -n -A30 -B5 'Regulator alarm RAW6:' "$QTI_OCP_SRC" || true
           else
-            echo "⚠️ Source tree does not contain the alarm message implementation."
-            echo "Falling back to regulator core UNDER_VOLTAGE tracing."
+            echo "⚠️ Vendor qti-ocp-notifier implementation is not part of the kernel source tree."
+            echo "Falling back to NVMEM core tracing for the vendor alarm_log read."
             python3 - <<'PY'
           from pathlib import Path
 
-          p = Path("drivers/regulator/core.c")
+          p = Path("drivers/nvmem/core.c")
           s = p.read_text()
 
-          marker = "Regulator under-voltage notification:"
+          marker = "Regulator alarm NVMEM RAW6:"
 
-          needle = """int regulator_notifier_call_chain(struct regulator_dev *rdev,
-          				  unsigned long event, void *data)
+          anchor = """void *nvmem_cell_read(struct nvmem_cell *cell, size_t *len)
           {
-          	_notifier_call_chain(rdev, event, data);
+          	struct nvmem_cell_entry *entry = cell->entry;
+          	struct nvmem_device *nvmem = entry->nvmem;
+          	u8 *buf;
+          	int rc;
           """
 
-          debug = """int regulator_notifier_call_chain(struct regulator_dev *rdev,
-          				  unsigned long event, void *data)
-          {
-          	if (event & REGULATOR_EVENT_UNDER_VOLTAGE)
-          		pr_info_ratelimited(
-          			"Regulator under-voltage notification: %s event=0x%lx\\n",
-          			rdev_get_name(rdev), event);
+          tail = """	if (rc) {
+          	kfree(buf);
+          	return ERR_PTR(rc);
+          	}
 
-          	_notifier_call_chain(rdev, event, data);
-          """
+          	return buf;
+          }"""
+
+          debug_tail = """	if (rc) {
+          	if (cell->id && !strcmp(cell->id, "alarm_log"))
+          		pr_err_ratelimited(
+          			"Regulator alarm NVMEM RAW6: read failed id=%s ret=%d\\n",
+          			cell->id, rc);
+          	kfree(buf);
+          	return ERR_PTR(rc);
+          	}
+
+          	if (cell->id && !strcmp(cell->id, "alarm_log") &&
+          	    len && *len >= 6) {
+          		pr_err_ratelimited(
+          			"Regulator alarm NVMEM RAW6: dev=%s id=%s len=%zu "
+          			"bytes=%02x %02x %02x %02x %02x %02x\\n",
+          			nvmem_dev_name(nvmem), cell->id, *len,
+          			buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
+          	}
+
+          	return buf;
+          }"""
 
           if marker in s:
-              print("✅ Regulator core diagnostic already present")
-          elif needle not in s:
-              raise SystemExit("drivers/regulator/core.c anchor not found; refusing to patch")
+              print("✅ NVMEM RAW6 diagnostic already present")
+          elif anchor not in s:
+              raise SystemExit("drivers/nvmem/core.c anchor not found; refusing to patch")
+          elif tail not in s:
+              raise SystemExit("drivers/nvmem/core.c read return anchor not found; refusing to patch")
           else:
-              s = s.replace(needle, debug, 1)
+              s = s.replace(tail, debug_tail, 1)
               p.write_text(s)
-              print("✅ Added regulator UNDER_VOLTAGE event diagnostic")
+              print("✅ Added NVMEM alarm_log RAW6 diagnostic")
           PY
+
+          echo "=== NVMEM alarm_log diagnostic verification ==="
+          grep -n -A35 -B8 'Regulator alarm NVMEM RAW6:' drivers/nvmem/core.c || true
+
           fi
 
 
