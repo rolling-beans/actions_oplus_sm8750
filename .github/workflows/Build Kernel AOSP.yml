@@ -851,18 +851,15 @@ jobs:
             mm/memblock.c include/linux/mm.h fs/pstore/ram.c "$DEFCONFIG" || true
 
           echo "=== Regulator alarm delivery diagnostic ==="
-          echo "Looking for qti-ocp-notifier.c in the actual source tree..."
-          QTI_OCP_SRC=$(find . -type f -name 'qti-ocp-notifier.c' -print -quit)
+          echo "Searching the actual source tree by alarm message / handler content..."
+          QTI_OCP_SRC=$(grep -R -l --include='*.c' \
+            'Regulator alarm during runtime:' . 2>/dev/null | head -n 1 || true)
 
-          if [ -z "$QTI_OCP_SRC" ]; then
-            echo "❌ qti-ocp-notifier.c is not present in this source tree."
-            exit 1
-          fi
+          if [ -n "$QTI_OCP_SRC" ]; then
+            echo "Found alarm implementation: $QTI_OCP_SRC"
+            export QTI_OCP_SRC
 
-          echo "Found: $QTI_OCP_SRC"
-          export QTI_OCP_SRC
-
-          python3 - <<'PY'
+            python3 - <<'PY'
           import os
           from pathlib import Path
 
@@ -916,8 +913,46 @@ jobs:
               print("✅ Added RAW6 diagnostic directly to alarm_notifier_handler")
           PY
 
-          echo "=== qti-ocp-notifier diagnostic source verification ==="
-          grep -n -A28 -B5 'Regulator alarm RAW6:' "$QTI_OCP_SRC"
+            echo "=== alarm implementation verification ==="
+            grep -n -A30 -B5 'Regulator alarm RAW6:' "$QTI_OCP_SRC" || true
+          else
+            echo "⚠️ Source tree does not contain the alarm message implementation."
+            echo "Falling back to regulator core UNDER_VOLTAGE tracing."
+            python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("drivers/regulator/core.c")
+          s = p.read_text()
+
+          marker = "Regulator under-voltage notification:"
+
+          needle = """int regulator_notifier_call_chain(struct regulator_dev *rdev,
+          				  unsigned long event, void *data)
+          {
+          	_notifier_call_chain(rdev, event, data);
+          """
+
+          debug = """int regulator_notifier_call_chain(struct regulator_dev *rdev,
+          				  unsigned long event, void *data)
+          {
+          	if (event & REGULATOR_EVENT_UNDER_VOLTAGE)
+          		pr_info_ratelimited(
+          			"Regulator under-voltage notification: %s event=0x%lx\\n",
+          			rdev_get_name(rdev), event);
+
+          	_notifier_call_chain(rdev, event, data);
+          """
+
+          if marker in s:
+              print("✅ Regulator core diagnostic already present")
+          elif needle not in s:
+              raise SystemExit("drivers/regulator/core.c anchor not found; refusing to patch")
+          else:
+              s = s.replace(needle, debug, 1)
+              p.write_text(s)
+              print("✅ Added regulator UNDER_VOLTAGE event diagnostic")
+          PY
+          fi
 
 
       - name: ⚡ Setup NoMount
