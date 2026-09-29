@@ -1453,6 +1453,74 @@ jobs:
           curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
 
+      - name: 🔍 Instrument regulator alarm RAW6
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/common
+      
+          echo "=== Regulator alarm delivery diagnostic ==="
+          QTI_OCP_SRC=$(grep -R -l --include='*.c' \
+            'Regulator alarm during runtime:' . 2>/dev/null | head -n 1 || true)
+      
+          if [ -n "$QTI_OCP_SRC" ]; then
+            echo "Found alarm implementation: $QTI_OCP_SRC"
+            export QTI_OCP_SRC
+      
+            python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+      
+          p = Path(os.environ["QTI_OCP_SRC"])
+          s = p.read_text()
+      
+          marker = "Regulator alarm RAW6:"
+      
+          if marker in s:
+              print("✅ RAW6 diagnostic already present")
+          else:
+              pattern = re.compile(
+                  r'(?P<read>'
+                  r'\tbuf = nvmem_cell_read\(log_info->nvmem_cell, &len\);\n'
+                  r'\tif \(IS_ERR\(buf\)\) \{\n'
+                  r'.*?'
+                  r'\n\t\}\n\n)'
+                  r'(?P<decode>\ti = index \* OCP_LOG_ENTRY_SIZE;)',
+                  re.S,
+              )
+      
+              m = pattern.search(s)
+              if not m:
+                  raise SystemExit(
+                      "ocp_notifier_read_entry() NVMEM read/decode anchor not found"
+                  )
+      
+              debug = """\tif (log_info == &ocp_dev->alarm && index == 0) {
+                  if (len >= 6) {
+                      pr_err("Regulator alarm RAW6: %02x %02x %02x %02x %02x %02x len=%zu\\n",
+                          buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], len);
+                  } else {
+                      pr_err("Regulator alarm RAW6: invalid len=%zu\\n", len);
+                  }
+              }
+      
+          """
+      
+              s = s[:m.start("decode")] + debug + s[m.start("decode"):]
+              p.write_text(s)
+              print("✅ Added RAW6 logging to the same alarm NVMEM read used for decoding")
+          PY
+      
+            grep -n -A30 -B8 'Regulator alarm RAW6:' "$QTI_OCP_SRC" || true
+      
+          else
+            echo "⚠️ qti-ocp-notifier implementation not found; using NVMEM fallback"
+            # fallback here
+          fi
+      
+          echo "=== Diagnostic patch diff ==="
+          git diff -- drivers/regulator drivers/nvmem/core.c || true
+
       - name: 📦 Add build name
         run: |
           cd kernel_workspace
