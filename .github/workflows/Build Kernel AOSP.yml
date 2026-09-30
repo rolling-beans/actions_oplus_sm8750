@@ -931,65 +931,63 @@ jobs:
 
           python3 - <<'PY'
           import os
-          import re
           from pathlib import Path
 
           p = Path(os.environ["QTI_OCP_SRC"])
           s = p.read_text()
 
-          marker = 'Regulator alarm NVMEM RAW6:'
+          marker = "Regulator alarm NVMEM RAW6:"
           if marker in s:
               print("✅ RAW6 diagnostic already present")
               raise SystemExit(0)
 
-          # Instrument the exact buffer returned by nvmem_cell_read() in
-          # ocp_notifier_read_entry(), before PPID/mode decoding.
-          func_re = re.compile(
-              r"(?P<head>static int ocp_notifier_read_entry\\(.*?\\n\\{)"
-              r"(?P<body>.*?)"
-              r"(?P<tail>\\n\\})",
-              re.S,
-          )
-          m = func_re.search(s)
-          if not m:
+          func_start = s.find("static int ocp_notifier_read_entry(")
+          if func_start < 0:
               raise SystemExit(
                   "ocp_notifier_read_entry() was not found; refusing to patch"
               )
 
-          body = m.group("body")
+          brace_start = s.find("{", func_start)
+          next_static = s.find("\nstatic ", brace_start)
+          if brace_start < 0 or next_static < 0:
+              raise SystemExit(
+                  "Could not determine ocp_notifier_read_entry() body; refusing to patch"
+              )
 
-          # This vendor tree carries the alarm/OCP source as nvmem_log_info.
-          # Require that exact form so we never accidentally instrument the OCP
-          # path instead of the alarm path.
-          read_re = re.compile(
-              r"(?P<indent>^[ \\t]*)buf = nvmem_cell_read\\("
-              r"log_info->nvmem_cell, &len\\);\\n",
-              re.M,
-          )
-          rm = read_re.search(body)
-          if not rm:
+          body_start = brace_start + 1
+          body = s[body_start:next_static]
+
+          read_anchor = "buf = nvmem_cell_read(log_info->nvmem_cell, &len);\n"
+          if read_anchor not in body:
               raise SystemExit(
                   "alarm nvmem_cell_read(log_info->nvmem_cell, &len) anchor "
                   "was not found; refusing to patch"
               )
 
-          indent = rm.group("indent")
+          indent = "    "
+          for line in body.splitlines():
+              if line.strip() == "buf = nvmem_cell_read(log_info->nvmem_cell, &len);":
+                  indent = line[:len(line) - len(line.lstrip())]
+                  break
 
           raw_debug = (
               f"{indent}if (log_info == &ocp_dev->alarm && index == 0) {{\\n"
-              f"{indent}\\tif (!IS_ERR(buf) && len >= 6)\\n"
-              f"{indent}\\t\\tpr_err(\\n"
-              f"{indent}\\t\\t\\t\"Regulator alarm NVMEM RAW6: index=%u len=%zu bytes=%02x %02x %02x %02x %02x %02x\\\\n\",\\n"
-              f"{indent}\\t\\t\\tindex, len, buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);\\n"
-              f"{indent}\\telse if (IS_ERR(buf))\\n"
-              f"{indent}\\t\\tpr_err(\\n"
-              f"{indent}\\t\\t\\t\"Regulator alarm NVMEM RAW6: index=%u read failed ret=%ld\\\\n\",\\n"
-              f"{indent}\\t\\t\\tindex, PTR_ERR(buf));\\n"
+              f"{indent}\tif (!IS_ERR(buf) && len >= 6)\\n"
+              f"{indent}\t\tpr_err(\\n"
+              f"{indent}\t\t\t\"Regulator alarm NVMEM RAW6: index=%u len=%zu bytes=%02x %02x %02x %02x %02x %02x\\n\",\\n"
+              f"{indent}\t\t\tindex, len, buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);\\n"
+              f"{indent}\telse if (IS_ERR(buf))\\n"
+              f"{indent}\t\tpr_err(\\n"
+              f"{indent}\t\t\t\"Regulator alarm NVMEM RAW6: index=%u read failed ret=%ld\\n\",\\n"
+              f"{indent}\t\t\tindex, PTR_ERR(buf));\\n"
+              f"{indent}\telse\\n"
+              f"{indent}\t\tpr_err(\\n"
+              f"{indent}\t\t\t\"Regulator alarm NVMEM RAW6: index=%u invalid len=%zu\\n\",\\n"
+              f"{indent}\t\t\tindex, len);\\n"
               f"{indent}}}\\n"
           )
 
-          insert_at = rm.end()
-          body = body[:insert_at] + raw_debug + body[insert_at:]
+          body = body.replace(read_anchor, read_anchor + raw_debug, 1)
 
           decode_anchor = "entry->mode_at_ocp = buf[i] & 0x7;"
           if decode_anchor not in body:
@@ -999,16 +997,17 @@ jobs:
 
           decode_debug = (
               f"{indent}pr_err(\\n"
-              f"{indent}\\t\"Regulator alarm DECODE: index=%u i=%u ppid=0x%03x mode=%u\\\\n\",\\n"
-              f"{indent}\\tindex, i, entry->ppid, entry->mode_at_ocp);\\n"
+              f"{indent}\t\"Regulator alarm DECODE: index=%u i=%u ppid=0x%03x mode=%u\\n\",\\n"
+              f"{indent}\tindex, i, entry->ppid, entry->mode_at_ocp);\\n"
           )
+
           body = body.replace(
               decode_anchor,
               decode_anchor + "\n" + decode_debug,
               1,
           )
 
-          s = s[:m.start("body")] + body + s[m.end("body"):]
+          s = s[:body_start] + body + s[next_static:]
           p.write_text(s)
           print("✅ Instrumented exact alarm_log buffer + decode in ocp_notifier_read_entry()")
           PY
