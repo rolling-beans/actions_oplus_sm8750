@@ -911,129 +911,6 @@ jobs:
           grep -n -E 'reserve_mem_find_by_name|__setup\("reserve_mem=|mem_name|CONFIG_PSTORE|reserve_mem=8M|ramoops\.mem_name' \
             mm/memblock.c include/linux/mm.h fs/pstore/ram.c "$DEFCONFIG" || true
 
-          echo "=== Regulator alarm delivery diagnostic ==="
-          echo "Searching the actual source tree by alarm message / handler content..."
-          QTI_OCP_SRC=$(grep -R -l --include='*.c' \
-            'Regulator alarm during runtime:' . 2>/dev/null | head -n 1 || true)
-
-          if [ -n "$QTI_OCP_SRC" ]; then
-            echo "Found alarm implementation: $QTI_OCP_SRC"
-            export QTI_OCP_SRC
-
-            python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          p = Path(os.environ["QTI_OCP_SRC"])
-          s = p.read_text()
-
-          marker = 'Regulator alarm RAW6:'
-
-          anchor = """static irqreturn_t alarm_notifier_handler(int irq, void *data)
-          {
-          	struct ocp_notifier_dev *ocp_dev = data;
-          	struct ocp_log_entry entry = {0};
-          	struct regulator_dev *rdev;
-          	int ret;
-          """
-
-          debug = """static irqreturn_t alarm_notifier_handler(int irq, void *data)
-          {
-          	struct ocp_notifier_dev *ocp_dev = data;
-          	struct ocp_log_entry entry = {0};
-          	struct regulator_dev *rdev;
-          	int ret;
-          	size_t raw_len = 0;
-          	u8 *raw_alarm = nvmem_cell_read(ocp_dev->alarm.nvmem_cell, &raw_len);
-
-          	if (IS_ERR(raw_alarm)) {
-          		pr_err_ratelimited(
-          			"Regulator alarm RAW6: nvmem_cell_read failed ret=%ld\\n",
-          			PTR_ERR(raw_alarm));
-          	} else if (raw_len >= 6) {
-          		pr_err_ratelimited(
-          			"Regulator alarm RAW6: %02x %02x %02x %02x %02x %02x len=%zu\\n",
-          			raw_alarm[0], raw_alarm[1], raw_alarm[2],
-          			raw_alarm[3], raw_alarm[4], raw_alarm[5], raw_len);
-          		kfree(raw_alarm);
-          	} else {
-          		pr_err_ratelimited(
-          			"Regulator alarm RAW6: invalid len=%zu\\n",
-          			raw_len);
-          		kfree(raw_alarm);
-          	}
-          """
-
-          if marker in s:
-              print("✅ RAW6 diagnostic already present")
-          elif anchor not in s:
-              raise SystemExit("alarm_notifier_handler anchor not found; refusing to patch")
-          else:
-              s = s.replace(anchor, debug, 1)
-              p.write_text(s)
-              print("✅ Added RAW6 diagnostic directly to alarm_notifier_handler")
-          PY
-
-            echo "=== alarm implementation verification ==="
-            grep -n -A30 -B5 'Regulator alarm RAW6:' "$QTI_OCP_SRC" || true
-          else
-            echo "⚠️ Vendor qti-ocp-notifier implementation is not part of the kernel source tree."
-            echo "Falling back to NVMEM core tracing for the vendor alarm_log read."
-            python3 - <<'PY'
-          import re
-          from pathlib import Path
-
-          p = Path("drivers/nvmem/core.c")
-          s = p.read_text()
-
-          marker = "Regulator alarm NVMEM RAW6:"
-          if marker in s:
-              print("✅ NVMEM RAW6 diagnostic already present")
-              raise SystemExit(0)
-
-          func_re = re.compile(
-              r"(?P<header>void \*nvmem_cell_read\(struct nvmem_cell \*cell, size_t \*len\)\n\{)"
-              r"(?P<body>.*?)"
-              r"(?P<export>\nEXPORT_SYMBOL_GPL\(nvmem_cell_read\);)",
-              re.S,
-          )
-
-          m = func_re.search(s)
-          if not m:
-              raise SystemExit("drivers/nvmem/core.c nvmem_cell_read() function not found; refusing to patch")
-
-          body = m.group("body")
-
-          ret_re = re.compile(r"\n(?P<indent>[ \t]+)return buf;\n(?P<brace>[ \t]*\})$")
-          rm = ret_re.search(body)
-          if not rm:
-              raise SystemExit("nvmem_cell_read() return buf anchor not found; refusing to patch")
-
-          debug = (
-              "\n\tif (cell->id && !strcmp(cell->id, \"alarm_log\")) {\n"
-              "\t\tif (len && *len >= 6) {\n"
-              "\t\t\tpr_err_ratelimited(\n"
-              "\t\t\t\t\"Regulator alarm NVMEM RAW6: id=%s len=%zu \"\n"
-              "\t\t\t\t\"bytes=%02x %02x %02x %02x %02x %02x\\n\",\n"
-              "\t\t\t\tcell->id, *len,\n"
-              "\t\t\t\tbuf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);\n"
-              "\t\t} else {\n"
-              "\t\t\tpr_err_ratelimited(\n"
-              "\t\t\t\t\"Regulator alarm NVMEM RAW6: unexpected len=%zu id=%s\\n\",\n"
-              "\t\t\t\tlen ? *len : 0, cell->id);\n"
-              "\t\t}\n"
-              "\t}\n"
-          )
-
-          body = body[:rm.start()] + debug + body[rm.start():]
-          s = s[:m.start("body")] + body + s[m.end("body"):]
-          p.write_text(s)
-          print("✅ Added NVMEM alarm_log RAW6 diagnostic by function structure")
-          PY
-          echo "=== NVMEM alarm_log diagnostic verification ==="
-          grep -n -A35 -B8 'Regulator alarm NVMEM RAW6:' drivers/nvmem/core.c || true
-
-          fi
 
 
       - name: ⚡ Setup NoMount
@@ -1457,69 +1334,110 @@ jobs:
         run: |
           set -euo pipefail
           cd kernel_workspace/common
-      
-          echo "=== Regulator alarm delivery diagnostic ==="
+
+          echo "=== Regulator alarm diagnostic ==="
+          echo "Searching for qti-ocp-notifier implementation..."
           QTI_OCP_SRC=$(grep -R -l --include='*.c' \
             'Regulator alarm during runtime:' . 2>/dev/null | head -n 1 || true)
-      
-          if [ -n "$QTI_OCP_SRC" ]; then
-            echo "Found alarm implementation: $QTI_OCP_SRC"
-            export QTI_OCP_SRC
-      
-            python3 - <<'PY'
+
+          if [ -z "$QTI_OCP_SRC" ]; then
+            echo "::error::Vendor qti-ocp-notifier implementation was not found"
+            exit 1
+          fi
+
+          echo "Found: $QTI_OCP_SRC"
+          export QTI_OCP_SRC
+
+          python3 - <<'PY'
           import os
-          import re
           from pathlib import Path
-      
+
           p = Path(os.environ["QTI_OCP_SRC"])
           s = p.read_text()
-      
-          marker = "Regulator alarm RAW6:"
-      
+
+          marker = "Regulator alarm NVMEM RAW6:"
           if marker in s:
               print("✅ RAW6 diagnostic already present")
-          else:
-              pattern = re.compile(
-                  r'(?P<read>'
-                  r'\tbuf = nvmem_cell_read\(log_info->nvmem_cell, &len\);\n'
-                  r'\tif \(IS_ERR\(buf\)\) \{\n'
-                  r'.*?'
-                  r'\n\t\}\n\n)'
-                  r'(?P<decode>\ti = index \* OCP_LOG_ENTRY_SIZE;)',
-                  re.S,
+              raise SystemExit(0)
+
+          func_start = s.find("static int ocp_notifier_read_entry(")
+          if func_start < 0:
+              raise SystemExit(
+                  "ocp_notifier_read_entry() was not found; refusing to patch"
               )
-      
-              m = pattern.search(s)
-              if not m:
-                  raise SystemExit(
-                      "ocp_notifier_read_entry() NVMEM read/decode anchor not found"
-                  )
-      
-              debug = """\tif (log_info == &ocp_dev->alarm && index == 0) {
-                  if (len >= 6) {
-                      pr_err("Regulator alarm RAW6: %02x %02x %02x %02x %02x %02x len=%zu\\n",
-                          buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], len);
-                  } else {
-                      pr_err("Regulator alarm RAW6: invalid len=%zu\\n", len);
-                  }
-              }
-      
-          """
-      
-              s = s[:m.start("decode")] + debug + s[m.start("decode"):]
-              p.write_text(s)
-              print("✅ Added RAW6 logging to the same alarm NVMEM read used for decoding")
+
+          brace_start = s.find("{", func_start)
+          next_static = s.find("\nstatic ", brace_start)
+          if brace_start < 0 or next_static < 0:
+              raise SystemExit(
+                  "Could not determine ocp_notifier_read_entry() body; refusing to patch"
+              )
+
+          body_start = brace_start + 1
+          body = s[body_start:next_static]
+
+          read_anchor = "buf = nvmem_cell_read(log_info->nvmem_cell, &len);\n"
+          if read_anchor not in body:
+              raise SystemExit(
+                  "alarm nvmem_cell_read(log_info->nvmem_cell, &len) anchor "
+                  "was not found; refusing to patch"
+              )
+
+          indent = "    "
+          for line in body.splitlines():
+              if line.strip() == "buf = nvmem_cell_read(log_info->nvmem_cell, &len);":
+                  indent = line[:len(line) - len(line.lstrip())]
+                  break
+
+          raw_debug = (
+              f"{indent}if (log_info == &ocp_dev->alarm && index == 0) {{\\n"
+              f"{indent}\tif (!IS_ERR(buf) && len >= 6)\\n"
+              f"{indent}\t\tpr_err(\\n"
+              f"{indent}\t\t\t\"Regulator alarm NVMEM RAW6: index=%u len=%zu bytes=%02x %02x %02x %02x %02x %02x\\n\",\\n"
+              f"{indent}\t\t\tindex, len, buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);\\n"
+              f"{indent}\telse if (IS_ERR(buf))\\n"
+              f"{indent}\t\tpr_err(\\n"
+              f"{indent}\t\t\t\"Regulator alarm NVMEM RAW6: index=%u read failed ret=%ld\\n\",\\n"
+              f"{indent}\t\t\tindex, PTR_ERR(buf));\\n"
+              f"{indent}\telse\\n"
+              f"{indent}\t\tpr_err(\\n"
+              f"{indent}\t\t\t\"Regulator alarm NVMEM RAW6: index=%u invalid len=%zu\\n\",\\n"
+              f"{indent}\t\t\tindex, len);\\n"
+              f"{indent}}}\\n"
+          )
+
+          body = body.replace(read_anchor, read_anchor + raw_debug, 1)
+
+          decode_anchor = "entry->mode_at_ocp = buf[i] & 0x7;"
+          if decode_anchor not in body:
+              raise SystemExit(
+                  "PPID/mode decode anchor was not found; refusing to patch"
+              )
+
+          decode_debug = (
+              f"{indent}pr_err(\\n"
+              f"{indent}\t\"Regulator alarm DECODE: index=%u i=%u ppid=0x%03x mode=%u\\n\",\\n"
+              f"{indent}\tindex, i, entry->ppid, entry->mode_at_ocp);\\n"
+          )
+
+          body = body.replace(
+              decode_anchor,
+              decode_anchor + "\n" + decode_debug,
+              1,
+          )
+
+          s = s[:body_start] + body + s[next_static:]
+          p.write_text(s)
+          print("✅ Instrumented exact alarm_log buffer + decode in ocp_notifier_read_entry()")
           PY
-      
-            grep -n -A30 -B8 'Regulator alarm RAW6:' "$QTI_OCP_SRC" || true
-      
-          else
-            echo "⚠️ qti-ocp-notifier implementation not found; using NVMEM fallback"
-            # fallback here
-          fi
-      
+
+          echo "=== Verification ==="
+          grep -n -A55 -B8 \
+            'Regulator alarm NVMEM RAW6:' "$QTI_OCP_SRC"
+
           echo "=== Diagnostic patch diff ==="
           git diff -- drivers/regulator drivers/nvmem/core.c || true
+
 
       - name: 📦 Add build name
         run: |
