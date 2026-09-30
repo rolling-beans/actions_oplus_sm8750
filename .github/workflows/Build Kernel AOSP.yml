@@ -1340,15 +1340,11 @@ jobs:
           QTI_OCP_SRC=$(grep -R -l --include='*.c' \
             'Regulator alarm during runtime:' . 2>/dev/null | head -n 1 || true)
 
-          if [ -z "$QTI_OCP_SRC" ]; then
-            echo "::error::Vendor qti-ocp-notifier implementation was not found"
-            exit 1
-          fi
+          if [ -n "$QTI_OCP_SRC" ]; then
+            echo "Found alarm implementation: $QTI_OCP_SRC"
+            export QTI_OCP_SRC
 
-          echo "Found: $QTI_OCP_SRC"
-          export QTI_OCP_SRC
-
-          python3 - <<'PY'
+            python3 - <<'PY'
           import os
           from pathlib import Path
 
@@ -1389,7 +1385,7 @@ jobs:
                   indent = line[:len(line) - len(line.lstrip())]
                   break
 
-          raw_debug = (
+          debug = (
               f"{indent}if (log_info == &ocp_dev->alarm && index == 0) {{\\n"
               f"{indent}\tif (!IS_ERR(buf) && len >= 6)\\n"
               f"{indent}\t\tpr_err(\\n"
@@ -1406,7 +1402,7 @@ jobs:
               f"{indent}}}\\n"
           )
 
-          body = body.replace(read_anchor, read_anchor + raw_debug, 1)
+          body = body.replace(read_anchor, read_anchor + debug, 1)
 
           decode_anchor = "entry->mode_at_ocp = buf[i] & 0x7;"
           if decode_anchor not in body:
@@ -1431,12 +1427,82 @@ jobs:
           print("✅ Instrumented exact alarm_log buffer + decode in ocp_notifier_read_entry()")
           PY
 
-          echo "=== Verification ==="
-          grep -n -A55 -B8 \
-            'Regulator alarm NVMEM RAW6:' "$QTI_OCP_SRC"
+            echo "=== Vendor-path verification ==="
+            grep -n -A55 -B8 'Regulator alarm NVMEM RAW6:' "$QTI_OCP_SRC" || true
+
+          else
+            echo "⚠️ qti-ocp-notifier implementation not found in source tree"
+            echo "Using the known-working NVMEM core fallback for alarm_log"
+
+            python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          p = Path("drivers/nvmem/core.c")
+          s = p.read_text()
+
+          marker = "Regulator alarm NVMEM RAW6:"
+          if marker in s:
+              print("✅ NVMEM RAW6 diagnostic already present")
+              raise SystemExit(0)
+
+          # Patch nvmem_cell_read() structurally. This preserves the fallback
+          # that worked on this source tree even when qti-ocp-notifier.c is
+          # outside the kernel source checkout.
+          func_re = re.compile(
+              r"(?P<header>void \*nvmem_cell_read\(struct nvmem_cell \*cell, size_t \*len\)\n\{)"
+              r"(?P<body>.*?)"
+              r"(?P<export>\nEXPORT_SYMBOL_GPL\(nvmem_cell_read\);)",
+              re.S,
+          )
+
+          m = func_re.search(s)
+          if not m:
+              raise SystemExit(
+                  "drivers/nvmem/core.c nvmem_cell_read() function not found; "
+                  "refusing to patch"
+              )
+
+          body = m.group("body")
+
+          ret_re = re.compile(
+              r"\n(?P<indent>[ \t]+)return buf;\n(?P<brace>[ \t]*\})$"
+          )
+          rm = ret_re.search(body)
+          if not rm:
+              raise SystemExit(
+                  "nvmem_cell_read() return buf anchor not found; "
+                  "refusing to patch"
+              )
+
+          debug = """
+          	if (cell->id && !strcmp(cell->id, "alarm_log")) {
+          		if (len && *len >= 6) {
+          			pr_err(
+          				"Regulator alarm NVMEM RAW6: id=%s len=%zu "
+          				"bytes=%02x %02x %02x %02x %02x %02x\\n",
+          				cell->id, *len,
+          				buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
+          		} else {
+          			pr_err(
+          				"Regulator alarm NVMEM RAW6: unexpected len=%zu id=%s\\n",
+          				len ? *len : 0, cell->id);
+          		}
+          	}
+          """
+
+          body = body[:rm.start()] + debug + body[rm.start():]
+          s = s[:m.start("body")] + body + s[m.end("body"):]
+          p.write_text(s)
+          print("✅ Added NVMEM alarm_log RAW6 diagnostic in drivers/nvmem/core.c")
+          PY
+
+            echo "=== NVMEM fallback verification ==="
+            grep -n -A35 -B8 'Regulator alarm NVMEM RAW6:'               drivers/nvmem/core.c
+          fi
 
           echo "=== Diagnostic patch diff ==="
-          git diff -- drivers/regulator drivers/nvmem/core.c || true
+          git diff -- drivers/regulator/qti-ocp-notifier.c drivers/nvmem/core.c || true
 
 
       - name: 📦 Add build name
