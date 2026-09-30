@@ -636,6 +636,8 @@ jobs:
             echo "CONFIG_CGROUP_BPF=y" >> "$DEFCONFIG"
             echo "CONFIG_NET_CLS_ACT=y" >> "$DEFCONFIG"
             echo "CONFIG_NET_ACT_BPF=y" >> "$DEFCONFIG"
+            echo "CONFIG_FUSE_FS=y" >> "$DEFCONFIG"
+            echo "CONFIG_FUSE_PASSTHROUGH=y" >> "$DEFCONFIG"
           else
             echo "BTF/eBPF/FUSE-BPF stack disabled"
           fi
