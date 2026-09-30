@@ -151,6 +151,11 @@ on:
         required: false
         type: boolean
         default: true
+      ksumi_lkm:
+        description: 'Build Kasumi module'
+        required: false
+        type: boolean
+        default: false
 
 
       
@@ -1142,7 +1147,7 @@ jobs:
           df -h
 
       - name: 🧩 Build Kasumi LKM
-        if: inputs.pstore_debug == false
+        if: inputs.ksumi_lkm
         run: |
           set -e
           cd $GITHUB_WORKSPACE/kernel_workspace
@@ -1290,7 +1295,7 @@ jobs:
           zip -z ../$AK3_NAME < ./ak3.log
 
       - name: 📤 Upload Kasumi LKM
-        if: inputs.pstore_debug == false
+        if: inputs.ksumi_lkm
         uses: actions/upload-artifact@v4
         with:
           name: kasumi-lkm-${{ env.KERNEL_FULL_VERSION }}
