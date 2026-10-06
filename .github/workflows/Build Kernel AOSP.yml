@@ -347,7 +347,7 @@ jobs:
             fi
           fi
 
-                    if [ -n "$AFDO_CFLAGS" ]; then
+          if [ -n "$AFDO_CFLAGS" ]; then
             echo "AFDO_CFLAGS=$AFDO_CFLAGS" >> "$GITHUB_ENV"
             echo "✅ AFDO enabled"
           else
