@@ -427,7 +427,7 @@ jobs:
         run: |
           cd kernel_workspace/common
           echo "🛠️ Setting up ReSukiSU (main)..."
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
+          curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s main
           cd KernelSU
           KSU_VERSION_COUNT=$(git rev-list --count HEAD)
           export KSUVER=$(expr $KSU_VERSION_COUNT + 37185)
