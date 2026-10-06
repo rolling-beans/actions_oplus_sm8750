@@ -164,20 +164,6 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - name: Test anonymous AFDO endpoint
-        run: |
-          AFDO_URL="https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT"
-          echo "Testing anonymous AFDO endpoint..."
-          curl -sS -L \
-            --connect-timeout 20 \
-            --max-time 60 \
-            -o /tmp/kernel.afdo.b64 \
-            -w 'AFDO HTTP status: %{http_code}\\nAFDO bytes: %{size_download}\\n' \
-            "$AFDO_URL"
-          echo "AFDO content type: $(file -b /tmp/kernel.afdo.b64 2>/dev/null || true)"
-          head -c 80 /tmp/kernel.afdo.b64 | tr '\\r\\n' '  '
-          echo
-
       - name: Workflow push event guard
         run: |
           echo "Push event detected. Kernel build is manual-only; skipping build."
