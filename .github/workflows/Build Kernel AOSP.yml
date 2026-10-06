@@ -201,10 +201,6 @@ jobs:
           key: codelinaro-build-tools-ks-kernel-lnx-4.0
 
       - name: Install dependencies & Init Source
-        env:
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
         run: |
           echo "Relocating heavy folders for background deletion..."
           sudo mv /usr/share/dotnet /usr/share/dotnet_trash 2>/dev/null || true
@@ -256,95 +252,45 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-          echo "Downloading optional AFDO profile (authenticated)..."
+          echo "Downloading optional AFDO profile..."
           AFDO_B64="$GITHUB_WORKSPACE/kernel.afdo.b64"
           AFDO_OUT="$GITHUB_WORKSPACE/kernel.afdo"
           AFDO_CFLAGS=""
-          AFDO_ACCESS_TOKEN=""
-          
+
           rm -f "$AFDO_B64" "$AFDO_OUT"
-          
-          if [ -z "${GOOGLE_CLIENT_ID:-}" ] || [ -z "${GOOGLE_CLIENT_SECRET:-}" ] || [ -z "${GOOGLE_REFRESH_TOKEN:-}" ]; then
-            echo "⚠️ Google OAuth secrets are not configured; AFDO will be disabled."
-          else
-            echo "Refreshing Google OAuth access token..."
 
-            # AFDO is optional: OAuth errors must not abort the kernel build.
-            # Capture Google's HTTP status and JSON error response for diagnostics.
-            TOKEN_RESPONSE=$(curl -sS \
-              --retry 3 \
-              --retry-delay 2 \
-              --connect-timeout 20 \
-              --max-time 60 \
-              -X POST \
-              -H "Content-Type: application/x-www-form-urlencoded" \
-              --data-urlencode "client_id=$GOOGLE_CLIENT_ID" \
-              --data-urlencode "client_secret=$GOOGLE_CLIENT_SECRET" \
-              --data-urlencode "refresh_token=$GOOGLE_REFRESH_TOKEN" \
-              --data-urlencode "grant_type=refresh_token" \
-              -w '\n%{http_code}' \
-              "https://oauth2.googleapis.com/token" || true)
+          AFDO_URL="https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT"
+          echo "Trying anonymous AFDO source: $AFDO_URL"
 
-            TOKEN_HTTP_STATUS="${TOKEN_RESPONSE##*$'\n'}"
-            TOKEN_BODY="${TOKEN_RESPONSE%$'\n'*}"
-            AFDO_ACCESS_TOKEN=""
+          # AFDO is optional. A temporary outage of android.googlesource.com
+          # must never abort the kernel build.
+          AFDO_HTTP_STATUS=$(curl -sS -L \
+            --retry 3 \
+            --retry-all-errors \
+            --retry-delay 2 \
+            --connect-timeout 20 \
+            --max-time 180 \
+            -o "$AFDO_B64" \
+            -w '%{http_code}' \
+            "$AFDO_URL" || true)
 
-            if [ "$TOKEN_HTTP_STATUS" = "200" ]; then
-              AFDO_ACCESS_TOKEN=$(printf '%s' "$TOKEN_BODY" | jq -r '.access_token // empty')
-              if [ -n "$AFDO_ACCESS_TOKEN" ]; then
-                echo "::add-mask::$AFDO_ACCESS_TOKEN"
-                echo "✅ Google OAuth access token acquired."
-              else
-                echo "❌ Google OAuth returned HTTP 200 without access_token; AFDO will be disabled."
-              fi
+          echo "AFDO HTTP status: $AFDO_HTTP_STATUS"
+
+          if [ "$AFDO_HTTP_STATUS" = "200" ]; then
+            echo "AFDO encoded size: $(wc -c < "$AFDO_B64") bytes"
+
+            if tr -d '\r\n' < "$AFDO_B64" | base64 -d -i > "$AFDO_OUT" 2>/dev/null \
+              && test -s "$AFDO_OUT"; then
+              echo "AFDO decoded size: $(wc -c < "$AFDO_OUT") bytes"
+              AFDO_CFLAGS="-fprofile-sample-use=$AFDO_OUT"
+              echo "✅ AFDO downloaded successfully"
             else
-              OAUTH_ERROR=$(printf '%s' "$TOKEN_BODY" | jq -r '.error // empty' 2>/dev/null || true)
-              OAUTH_ERROR_DESCRIPTION=$(printf '%s' "$TOKEN_BODY" | jq -r '.error_description // empty' 2>/dev/null || true)
-
-              echo "⚠️ Google OAuth token refresh failed (HTTP ${TOKEN_HTTP_STATUS:-unknown})."
-              echo "OAuth error: ${OAUTH_ERROR:-unknown}"
-              echo "OAuth description: ${OAUTH_ERROR_DESCRIPTION:-unknown}"
-              echo "AFDO will be disabled; continuing without AFDO optimization."
+              echo "❌ HTTP 200 received, but the response is not valid base64 AFDO data."
+              rm -f "$AFDO_OUT"
             fi
-
-            unset TOKEN_BODY TOKEN_RESPONSE OAUTH_ERROR OAUTH_ERROR_DESCRIPTION
-
-            if [ -n "$AFDO_ACCESS_TOKEN" ]; then
-              AFDO_URL="https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT"
-              echo "Trying authenticated AFDO source: $AFDO_URL"
-
-              AFDO_HTTP_STATUS=$(curl -sS -L \
-                --retry 3 \
-                --retry-all-errors \
-                --retry-delay 2 \
-                --connect-timeout 20 \
-                --max-time 180 \
-                -H "Authorization: Bearer $AFDO_ACCESS_TOKEN" \
-                -o "$AFDO_B64" \
-                -w '%{http_code}' \
-                "$AFDO_URL" || true)
-
-              echo "AFDO HTTP status: $AFDO_HTTP_STATUS"
-
-              if [ "$AFDO_HTTP_STATUS" = "200" ]; then
-                echo "AFDO encoded size: $(wc -c < "$AFDO_B64") bytes"
-
-                if tr -d '\r\n' < "$AFDO_B64" | base64 -d -i > "$AFDO_OUT" 2>/dev/null \
-                  && test -s "$AFDO_OUT"; then
-                  echo "AFDO decoded size: $(wc -c < "$AFDO_OUT") bytes"
-                  AFDO_CFLAGS="-fprofile-sample-use=$AFDO_OUT"
-                  echo "✅ AFDO downloaded with Google OAuth authentication"
-                else
-                  echo "❌ HTTP 200 received, but the response is not valid base64 AFDO data."
-                  rm -f "$AFDO_OUT"
-                fi
-              else
-                echo "❌ Authenticated AFDO download failed (HTTP $AFDO_HTTP_STATUS)."
-                rm -f "$AFDO_B64" "$AFDO_OUT"
-              fi
-
-              unset AFDO_ACCESS_TOKEN
-            fi
+          else
+            echo "❌ AFDO download failed (HTTP $AFDO_HTTP_STATUS)."
+            rm -f "$AFDO_B64" "$AFDO_OUT"
           fi
 
           if [ -n "$AFDO_CFLAGS" ]; then
@@ -355,7 +301,6 @@ jobs:
             echo "⚠️ AFDO unavailable; continuing without AFDO optimization"
           fi
           
-          unset AFDO_ACCESS_TOKEN
           rm -f "$AFDO_B64"
           
           echo "Source and tools initialized successfully!"
