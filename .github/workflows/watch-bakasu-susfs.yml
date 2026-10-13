@@ -1,0 +1,93 @@
+name: Watch BakaSU SUSFS compatibility
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    name: Check SUSFS compatibility guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore one-shot notification state
+        uses: actions/cache/restore@v4
+        with:
+          path: .watchstate/susfs-alert-sent
+          key: susfs-compat-alert-sent-v1
+
+      - name: Check notification state
+        id: state
+        shell: bash
+        run: |
+          if [[ -f .watchstate/susfs-alert-sent ]]; then
+            echo "sent=true" >> "$GITHUB_OUTPUT"
+            echo "Notification already sent; no further checks needed."
+          else
+            echo "sent=false" >> "$GITHUB_OUTPUT"
+            echo "No notification has been sent yet."
+          fi
+
+      - name: Check upstream compatibility guard
+        id: check
+        if: steps.state.outputs.sent != 'true'
+        shell: bash
+        env:
+          FILE_URL: https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/tools/susfs_compat.mk
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/susfs-watch"
+          curl --fail --location --silent --show-error \
+            --retry 3 --retry-delay 3 --connect-timeout 15 --max-time 60 \
+            "$FILE_URL" -o "$RUNNER_TEMP/susfs-watch/susfs_compat.mk"
+
+          if grep -Eq '^[[:space:]]*\$\(error[[:space:]]+Please wait susfs update\.[[:space:]]*\)[[:space:]]*$' \
+              "$RUNNER_TEMP/susfs-watch/susfs_compat.mk"; then
+            echo "blocked=true" >> "$GITHUB_OUTPUT"
+            echo "BakaSU still contains the SUSFS build stop."
+          else
+            echo "blocked=false" >> "$GITHUB_OUTPUT"
+            echo "The SUSFS build-stop line has been removed or changed."
+          fi
+
+      - name: Send one-time Telegram notification
+        id: notify
+        if: steps.state.outputs.sent != 'true' && steps.check.outputs.blocked == 'false'
+        shell: bash
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TELEGRAM_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
+            echo "::error::TELEGRAM_TOKEN and TELEGRAM_CHAT_ID repository secrets must be configured."
+            exit 1
+          fi
+
+          message=$'✅ BakaSU: изменилось условие остановки сборки SUSFS.\n\nВ kernel/tools/susfs_compat.mk больше не найдено прежнее выражение $(error Please wait susfs update.). Это сигнал проверить совместимость и повторить сборку с SUSFS=true, но само по себе ещё не гарантирует успешную компиляцию.\n\nФайл: https://github.com/Baka-SU/BakaSU/blob/main/kernel/tools/susfs_compat.mk'
+
+          response="$(curl --fail-with-body --silent --show-error \
+            --request POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${message}" \
+            --data "disable_web_page_preview=true")"
+
+          printf '%s' "$response" | jq --exit-status '.ok == true' >/dev/null
+          echo "Telegram notification sent successfully."
+
+      - name: Record notification state
+        if: steps.notify.outcome == 'success'
+        shell: bash
+        run: |
+          mkdir -p .watchstate
+          date -u '+Notification sent at %Y-%m-%dT%H:%M:%SZ' > .watchstate/susfs-alert-sent
+
+      - name: Save one-shot notification state
+        if: steps.notify.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: .watchstate/susfs-alert-sent
+          key: susfs-compat-alert-sent-v1
