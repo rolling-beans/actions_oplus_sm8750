@@ -393,7 +393,7 @@ jobs:
         run: |
           cd kernel_workspace/common
           echo "🛠️ Setting up ReSukiSU (main)..."
-          curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s main
+          curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s sync-susfs
           cd KernelSU
           KSU_VERSION_COUNT=$(git rev-list --count HEAD)
           export KSUVER=$(expr $KSU_VERSION_COUNT + 37185)
@@ -862,6 +862,8 @@ jobs:
           CONFIG_NETFILTER_XT_TARGET_LOG=y
           CONFIG_NETFILTER_XT_MATCH_RECENT=y
           CONFIG_USER_NS=y
+          CONFIG_UNIX_DIAG=y
+          CONFIG_PROC_CHILDREN=y
           EOF
           echo "✅ Droidspaces support enabled"
 
