@@ -1103,6 +1103,20 @@ jobs:
             KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option"\
             gki_defconfig 2>&1 | tee -a /tmp/kbuild.log
 
+          scripts/config --file "$GITHUB_WORKSPACE/kout/.config" \
+            --enable UNIX_DIAG \
+            --enable PROC_CHILDREN
+          
+          make LLVM=1 LLVM_IAS=1 ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            O="$GITHUB_WORKSPACE/kout" olddefconfig
+          
+          grep -E '^(CONFIG_UNIX=|CONFIG_PROC_FS=|CONFIG_UNIX_DIAG=|CONFIG_PROC_CHILDREN=)' \
+            "$GITHUB_WORKSPACE/kout/.config"
+          
+          grep -qx 'CONFIG_UNIX_DIAG=y' "$GITHUB_WORKSPACE/kout/.config"
+          grep -qx 'CONFIG_PROC_CHILDREN=y' "$GITHUB_WORKSPACE/kout/.config"
+
           make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC="ccache clang" LD="$(pwd)/ld-wrapper" HOSTLD="$(pwd)/ld-wrapper" \
             O=$GITHUB_WORKSPACE/kout \
