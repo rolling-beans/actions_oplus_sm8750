@@ -1066,6 +1066,7 @@ jobs:
 
       - name: 🔨 Build Kernel
         run: |
+          set -e
           WORKDIR="$(pwd)"
           export MAP="-fdebug-prefix-map=${GITHUB_WORKSPACE}=. -fmacro-prefix-map=${GITHUB_WORKSPACE}=. -ffile-prefix-map=${GITHUB_WORKSPACE}=."
           export PATH="$WORKDIR/kernel_workspace/clang-r563880c/bin:$WORKDIR/kernel_workspace/build-tools/linux-x86/bin:$PATH"
