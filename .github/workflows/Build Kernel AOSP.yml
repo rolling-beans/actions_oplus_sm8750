@@ -1157,9 +1157,15 @@ jobs:
           EOF
           chmod +x "$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper"
 
-          # The kernel workflow builds only Image. Prepare the output tree
-          # for an external module; Linux 6.6 generates scripts/module.lds
-          # through modules_prepare, which is required by the final module link.
+          # The Image build may leave generated ARM64 UAPI wrapper headers in
+          # the source tree (arch/arm64/include/generated). Linux 6.6 refuses
+          # modules_prepare when this source-tree path exists. It was absent
+          # after source extraction, so remove only this generated directory.
+          echo "🧹 Removing generated ARM64 headers from source tree..."
+          rm -rf "$GITHUB_WORKSPACE/kernel_workspace/common/arch/arm64/include/generated"
+
+          # Prepare the output tree for an external module; Linux 6.6 generates
+          # scripts/module.lds through modules_prepare, required by the final link.
           echo "🔧 Preparing kernel tree for external modules..."
           make -C common \
             ARCH=arm64 \
