@@ -151,63 +151,7 @@ def upstream_verified(original, sp, sh, rules):
         prefix = publish[max(0,p.start()-240):p.start()]
         if not re.search(
             r"(?:\(\s*void\s*\)\s*)?ksu_policydb_fixup_len\s*\(\s*"
-            r"(?:db|&\s*pol\s*->\s*policydb)\s*,\s*" + r'"[^"\n]+"\s*\)\s*;\s*    sp = root / 'kernel/selinux/sepolicy.c'
-    sh = root / 'kernel/selinux/sepolicy.h'
-    rules = root / 'kernel/selinux/rules.c'
-    original = {p: p.read_text() for p in (sp, sh, rules)}
-
-    if upstream_verified(original, sp, sh, rules):
-        return "SKIPPED_UPSTREAM"
-
-    a = original[sp]
-    a = unique_replace(a, '#include <linux/vmalloc.h>\n',
-                       '#include <linux/vmalloc.h>\n#include <linux/sizes.h>\n', 'sepolicy.c include')
-    anchor = '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || defined(KSU_COMPAT_HAS_POLICY_MUTEX)\n// 5.10+ using selinux_policy\n'
-    a = unique_replace(a, anchor, HELPER + anchor, 'sepolicy.c insertion')
-
-    b = original[sh]
-    anchor = 'void ksu_destroy_sepolicy(struct selinux_policy *orig);\n'
-    b = unique_replace(b, anchor,
-                       anchor + 'int ksu_policydb_fixup_len(struct policydb *db, const char *tag);\n',
-                       'sepolicy.h declaration')
-
-    c = original[rules]
-    anchor = '    rcu_assign_pointer(selinux_state.policy, pol);\n'
-    if c.count(anchor) != 2:
-        raise ValueError(f'rules.c: expected two publications, found {c.count(anchor)}')
-    c = c.replace(anchor, '    (void)ksu_policydb_fixup_len(&pol->policydb, "apply_kernelsu_rules");\n'+anchor, 1)
-    # Replace the second occurrence, never the first already patched block.
-    pos = c.find(anchor)
-    pos2 = c.find(anchor, pos + len(anchor))
-    if pos2 < 0:
-        raise ValueError('rules.c: second policy publication missing')
-    c = c[:pos2] + '    (void)ksu_policydb_fixup_len(&pol->policydb, "handle_sepolicy");\n' + c[pos2:]
-
-    patched = {sp: a, sh: b, rules: c}
-    if not check_only:
-        for p, txt in patched.items():
-            p.write_text(txt)
-    for p in patched:
-        print(f'{"Verified" if check_only else "Patched"}: {p}')
-
-    return "CHECKED_PATCHABLE" if check_only else "APPLIED"
-
-if __name__ == '__main__':
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('root', type=Path, help='Directory containing BakaSU kernel/selinux')
-    ap.add_argument('--check', action='store_true', help='Only check patch anchors')
-    opts = ap.parse_args()
-    try:
-        status = patch(opts.root, opts.check)
-    except (OSError, ValueError) as exc:
-        report("FAILED", str(exc))
-        raise SystemExit(1) from exc
-    report(status, {
-        "APPLIED": "Compatibility patch inserted at both policy publications.",
-        "SKIPPED_UPSTREAM": "Existing complete upstream fix verified; no patch needed.",
-        "CHECKED_PATCHABLE": "Source is patchable; no changes made (--check).",
-    }[status])
-,
+            r"(?:db|&\s*pol\s*->\s*policydb)\s*,\s*" + r'"[^"\n]+"\s*\)\s*;\s*$',
             prefix,
         ):
             raise ValueError("Missing upstream fixup directly before policy publication")
@@ -269,10 +213,20 @@ def patch(root, check_only=False):
     for p in patched:
         print(f'{"Verified" if check_only else "Patched"}: {p}')
 
+    return "CHECKED_PATCHABLE" if check_only else "APPLIED"
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('root', type=Path, help='Directory containing BakaSU kernel/selinux')
     ap.add_argument('--check', action='store_true', help='Only check patch anchors')
     opts = ap.parse_args()
-    patch(opts.root, opts.check)
+    try:
+        status = patch(opts.root, opts.check)
+    except (OSError, ValueError) as exc:
+        report("FAILED", str(exc))
+        raise SystemExit(1) from exc
+    report(status, {
+        "APPLIED": "Compatibility patch inserted at both policy publications.",
+        "SKIPPED_UPSTREAM": "Existing complete upstream fix verified; no patch needed.",
+        "CHECKED_PATCHABLE": "Source is patchable; no changes made (--check).",
+    }[status])
