@@ -400,11 +400,20 @@ jobs:
           echo "KSUVER=$KSUVER" >> $GITHUB_ENV
           echo "✅ ReSukiSU $(git rev-parse --short HEAD) (ver $KSUVER)"
 
+      - name: 📥 Checkout ReSukiSU CI patch helper
+        if: inputs.ksu_type == 'ReSukiSU'
+        uses: actions/checkout@v4
+        with:
+          path: ci-tools
+          sparse-checkout: |
+            .github/scripts
+          persist-credentials: false
+
       - name: 🔧 Fix ReSukiSU SELinux policy serialization
         if: inputs.ksu_type == 'ReSukiSU'
         run: |
           cd kernel_workspace/common
-          python3 "${GITHUB_WORKSPACE}/.github/scripts/patch_bakasu_policydb_len.py" KernelSU
+          python3 "${GITHUB_WORKSPACE}/ci-tools/.github/scripts/patch_bakasu_policydb_len.py" KernelSU
           git -C KernelSU diff --check
           git -C KernelSU diff --stat
 
