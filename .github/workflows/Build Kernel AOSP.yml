@@ -410,7 +410,7 @@ jobs:
           persist-credentials: false
 
       - name: 🔧 Fix ReSukiSU SELinux policy serialization
-        if: inputs.ksu_type == '//ReSukiSU'
+        if: inputs.ksu_type == 'ReSukiSU'
         run: |
           cd kernel_workspace/common
           python3 "${GITHUB_WORKSPACE}/ci-tools/.github/scripts/patch_bakasu_policydb_len.py" KernelSU
