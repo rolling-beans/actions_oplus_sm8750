@@ -409,8 +409,11 @@ jobs:
             .github/scripts
           persist-credentials: false
 
-      - name: 🔧 Fix ReSukiSU SELinux policy serialization
+      - name: 🔧 ReSukiSU policydb.len — apply or verify upstream
         if: inputs.ksu_type == 'ReSukiSU'
+        id: bakasu_policydb_len
+        # Script writes APPLIED/SKIPPED_UPSTREAM/FAILED to log, annotations and Job Summary.
+        # Unknown upstream implementations fail the build rather than double-patching.
         run: |
           cd kernel_workspace/common
           python3 "${GITHUB_WORKSPACE}/ci-tools/.github/scripts/patch_bakasu_policydb_len.py" KernelSU
