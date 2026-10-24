@@ -1,5 +1,5 @@
-name: OP13 Kernel AOSP Build
-run-name: ${{ inputs.ksu_type }} OP13 AOSP Build
+name: Kasumi Diagnostics (OnePlus 13)
+run-name: Kasumi diagnostics · ${{ github.ref_name }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.ksu_type }}
@@ -13,9 +13,6 @@ env:
   KERNEL_FULL_VERSION: '6.6.144'
 
 on:
-  push:
-    branches:
-      - master
   workflow_dispatch:
     inputs:
       ksu_type:
@@ -152,28 +149,19 @@ on:
         type: boolean
         default: true
       ksumi_lkm:
-        description: 'Build Kasumi module'
+        description: 'Build Kasumi module (enabled for this diagnostic workflow)'
         required: false
         type: boolean
-        default: false
+        default: true
 
 
       
 jobs:
-  push-guard:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Workflow push event guard
-        run: |
-          echo "Push event detected. Kernel build is manual-only; skipping build."
-
   build:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       ksuver: ${{ steps.ksu_version.outputs.ksuver }}
-      ak3name: ${{ steps.create_zip.outputs.ak3name }}
     permissions:
       actions: write
       contents: read
@@ -304,6 +292,73 @@ jobs:
           rm -f "$AFDO_B64"
           
           echo "Source and tools initialized successfully!"
+          mkdir -p "$GITHUB_WORKSPACE/kasumi-diagnostics"
+          cat > "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set +e
+          LABEL="${1:-unnamed}"
+          ROOT="${GITHUB_WORKSPACE}/kernel_workspace/common"
+          OUT="${GITHUB_WORKSPACE}/kout"
+          DIAG_DIR="${GITHUB_WORKSPACE}/kasumi-diagnostics"
+          mkdir -p "$DIAG_DIR"
+          LOG="$DIAG_DIR/source-tree-${LABEL}.txt"
+          {
+            echo "=== Kernel source/output diagnostic: $LABEL ==="
+            date -u "+UTC: %Y-%m-%dT%H:%M:%SZ"
+            echo "ROOT=$ROOT"
+            echo "OUT=$OUT"
+            echo
+            echo "=== Source-tree guard paths (Linux 6.6 Makefile outputmakefile:669-677) ==="
+            for rel in .config include/config arch/arm64/include/generated; do
+              path="$ROOT/$rel"
+              if [ -e "$path" ] || [ -L "$path" ]; then
+                echo "PRESENT: $path"
+                ls -ld "$path"
+                if [ -f "$path" ]; then sha256sum "$path"; fi
+                if [ -d "$path" ]; then find "$path" -maxdepth 3 -type f -printf "%p (%s bytes)\n" 2>/dev/null | sort | head -n 100; fi
+              else
+                echo "ABSENT: $path"
+              fi
+            done
+            echo
+            echo "=== Output-tree config/generated paths ==="
+            for rel in .config include/config arch/arm64/include/generated scripts/module.lds Module.symvers vmlinux.symvers vmlinux arch/arm64/boot/Image; do
+              path="$OUT/$rel"
+              if [ -e "$path" ] || [ -L "$path" ]; then
+                echo "PRESENT: $path"
+                ls -ld "$path"
+                if [ -f "$path" ]; then stat -c "size=%s mtime=%y" "$path"; fi
+              else
+                echo "ABSENT: $path"
+              fi
+            done
+            if [ -f "$OUT/.config" ]; then
+              echo
+              echo "=== Relevant resolved config ==="
+              sha256sum "$OUT/.config"
+              grep -E "^(CONFIG_(KSU|HEADERS_INSTALL|MODULES|MODVERSIONS|LTO|THINLTO|LOCALVERSION|DEBUG_INFO_BTF))=" "$OUT/.config" | sort
+            fi
+            echo
+            echo "=== Source root top-level ==="
+            ls -la "$ROOT" | head -n 80
+            if [ -d "$ROOT/.git" ]; then
+              git -C "$ROOT" status --short
+              git -C "$ROOT" rev-parse HEAD
+            else
+              echo "Source was unpacked from an archive; .git metadata is absent."
+            fi
+            echo
+            echo "=== Output symlinks ==="
+            for path in "$OUT/source" "$OUT/Makefile" "$OUT/scripts"; do
+              if [ -e "$path" ] || [ -L "$path" ]; then ls -ld "$path"; readlink -f "$path" 2>/dev/null || true; else echo "ABSENT: $path"; fi
+            done
+            echo
+            echo "=== Disk / filesystem ==="
+            df -h "$ROOT" "$OUT" 2>&1
+          } 2>&1 | tee "$LOG"
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh"
+          "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh" after-source-extraction
 
       - name: Cache ccache-ECS binary
         uses: actions/cache@v4
@@ -1084,6 +1139,7 @@ jobs:
           cd kernel_workspace/common
           set -o pipefail
           : > /tmp/kbuild.log
+          "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh" before-gki-defconfig
 
           echo '#!/bin/bash' > ld-wrapper
           echo 'ld.lld "$@" --thinlto-cache-dir=$LDCACHE_DIR --thinlto-jobs=$(($(nproc --all) / 2))' >> ld-wrapper
@@ -1102,6 +1158,7 @@ jobs:
             O=$GITHUB_WORKSPACE/kout \
             KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option"\
             gki_defconfig 2>&1 | tee -a /tmp/kbuild.log
+          "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh" after-gki-defconfig
 
           make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC="ccache clang" LD="$(pwd)/ld-wrapper" HOSTLD="$(pwd)/ld-wrapper" \
@@ -1110,320 +1167,107 @@ jobs:
             Image 2>&1 | tee -a /tmp/kbuild.log
 
           echo "Kernel Compilation Complete!"
+          "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh" after-image-build
+          cp /tmp/kbuild.log "$GITHUB_WORKSPACE/kasumi-diagnostics/kernel-build.log" || true
           ccache -c
           ccache --evict-older-than 10800s
           echo "CCache Status:"
           ccache -s
           df -h
 
-      - name: 🧩 Build Kasumi LKM
+      - name: 🧩 Build Kasumi LKM (diagnostics)
         if: inputs.ksumi_lkm
         run: |
-          set -e
-          cd $GITHUB_WORKSPACE/kernel_workspace
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel_workspace"
+          mkdir -p "$GITHUB_WORKSPACE/kasumi-diagnostics"
 
-          echo "📦 Cloning Kasumi..."
-          rm -rf kasumi
-          git clone --depth=1 https://github.com/Rouyashiki/Kasumi.git kasumi
-
-          echo "🔧 Preparing the same AOSP toolchain used for the 6.6.143 kernel..."
+          echo "=== Toolchain ==="
           export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/linux-x86/bin:$PATH"
           CLANG_DIR="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin"
-          echo "Clang: $($CLANG_DIR/clang --version | head -n 1)"
-          echo "LLD:   $($CLANG_DIR/ld.lld --version | head -n 1)"
+          "$CLANG_DIR/clang" --version | head -n 1 | tee "$GITHUB_WORKSPACE/kasumi-diagnostics/toolchain.txt"
+          "$CLANG_DIR/ld.lld" --version | head -n 1 | tee -a "$GITHUB_WORKSPACE/kasumi-diagnostics/toolchain.txt"
+          make --version | head -n 1 | tee -a "$GITHUB_WORKSPACE/kasumi-diagnostics/toolchain.txt"
 
-          # Each GitHub Actions step has its own shell, so the ld-wrapper
-          # created by the kernel build step is not guaranteed to exist here.
+          echo "=== Kasumi source ==="
+          rm -rf kasumi
+          git clone --depth=1 https://github.com/Rouyashiki/Kasumi.git kasumi 2>&1 | tee "$GITHUB_WORKSPACE/kasumi-diagnostics/kasumi-clone.log"
+          git -C kasumi log -1 --format="KASUMI_COMMIT=%H%nKASUMI_DATE=%cI%nKASUMI_SUBJECT=%s" | tee "$GITHUB_WORKSPACE/kasumi-diagnostics/kasumi-source.txt"
+
           cat > "$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper" <<'EOF'
           #!/bin/bash
           exec ld.lld "$@" --thinlto-cache-dir=$LDCACHE_DIR --thinlto-jobs=$(($(nproc --all) / 2))
           EOF
           chmod +x "$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper"
 
-          # The kernel workflow builds only Image. Prepare the output tree
-          # for an external module; Linux 6.6 generates scripts/module.lds
-          # through modules_prepare, which is required by the final module link.
-          echo "🔧 Preparing kernel tree for external modules..."
-          make -C common \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC="ccache clang" \
-            O=$GITHUB_WORKSPACE/kout \
-            modules_prepare
+          echo "=== Pre-modules_prepare diagnostics ==="
+          "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh" before-modules-prepare
+          cp /tmp/kbuild.log "$GITHUB_WORKSPACE/kasumi-diagnostics/kernel-build.log" 2>/dev/null || true
+          {
+            echo "KERNEL_FULL_VERSION=${KERNEL_FULL_VERSION}"
+            echo "GITHUB_SHA=${GITHUB_SHA}"
+            echo "GITHUB_REF_NAME=${GITHUB_REF_NAME}"
+            echo "CCACHE_DIR=${CCACHE_DIR:-unset}"
+            echo "LDCACHE_DIR=${LDCACHE_DIR:-unset}"
+            echo "CWD=$(pwd)"
+          } | tee "$GITHUB_WORKSPACE/kasumi-diagnostics/build-environment.txt"
+
+          echo "=== Running modules_prepare; preserving full output and actual make status ==="
+          set +e
+          make -C common ARCH=arm64 LLVM=1 LLVM_IAS=1 CC="ccache clang" O="$GITHUB_WORKSPACE/kout" modules_prepare 2>&1 | tee "$GITHUB_WORKSPACE/kasumi-diagnostics/modules-prepare.log"
+          PREP_RC=${PIPESTATUS[0]}
+          set -e
+          echo "modules_prepare exit code: $PREP_RC" | tee -a "$GITHUB_WORKSPACE/kasumi-diagnostics/modules-prepare.log"
+          "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh" after-modules-prepare
+          if [ "$PREP_RC" -ne 0 ]; then
+            echo "::error::modules_prepare failed with exit code $PREP_RC"
+            exit "$PREP_RC"
+          fi
 
           if [ ! -s "$GITHUB_WORKSPACE/kout/scripts/module.lds" ]; then
             echo "::error::kout/scripts/module.lds was not generated by modules_prepare"
             exit 1
           fi
 
-          # The kernel workflow does not build in-tree modules, so the external
-          # module's Module.symvers is absent. vmlinux.symvers is generated
-          # during the vmlinux link and contains the exported kernel symbols
-          # required by modpost for Kasumi.
           if [ ! -s "$GITHUB_WORKSPACE/kout/Module.symvers" ]; then
             if [ ! -s "$GITHUB_WORKSPACE/kout/vmlinux.symvers" ]; then
               echo "::error::Neither kout/Module.symvers nor kout/vmlinux.symvers exists"
+              find "$GITHUB_WORKSPACE/kout" -maxdepth 3 -iname "*symvers*" -type f -printf "%p (%s bytes)\n" 2>/dev/null | tee "$GITHUB_WORKSPACE/kasumi-diagnostics/symvers-files.txt" || true
               exit 1
             fi
-            cp "$GITHUB_WORKSPACE/kout/vmlinux.symvers" \
-               "$GITHUB_WORKSPACE/kout/Module.symvers"
-            echo "✅ Prepared kout/Module.symvers from kout/vmlinux.symvers"
+            cp "$GITHUB_WORKSPACE/kout/vmlinux.symvers" "$GITHUB_WORKSPACE/kout/Module.symvers"
+            echo "Prepared kout/Module.symvers from kout/vmlinux.symvers"
           fi
 
-          echo "🔧 Building Kasumi against the prepared 6.6.143 kernel..."
-          set -o pipefail
-          make -C common \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC="ccache clang" \
-            LD="$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper" \
-            HOSTLD="$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper" \
-            O=$GITHUB_WORKSPACE/kout \
-            M=$GITHUB_WORKSPACE/kernel_workspace/kasumi/src \
-            modules 2>&1 | tee -a /tmp/kasumi-kbuild.log
+          echo "=== Building Kasumi LKM ==="
+          set +e
+          make -C common ARCH=arm64 LLVM=1 LLVM_IAS=1 CC="ccache clang" LD="$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper" HOSTLD="$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper" O="$GITHUB_WORKSPACE/kout" M="$GITHUB_WORKSPACE/kernel_workspace/kasumi/src" modules 2>&1 | tee "$GITHUB_WORKSPACE/kasumi-diagnostics/kasumi-kbuild.log"
+          KASUMI_RC=${PIPESTATUS[0]}
+          set -e
+          echo "Kasumi module build exit code: $KASUMI_RC" | tee -a "$GITHUB_WORKSPACE/kasumi-diagnostics/kasumi-kbuild.log"
+          "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh" after-kasumi-build
+          if [ "$KASUMI_RC" -ne 0 ]; then exit "$KASUMI_RC"; fi
 
           KASUMI_KO="$GITHUB_WORKSPACE/kernel_workspace/kasumi/src/kasumi_lkm.ko"
-          if [ ! -f "$KASUMI_KO" ]; then
+          if [ ! -s "$KASUMI_KO" ]; then
             echo "::error::Kasumi module was not produced: $KASUMI_KO"
-            find "$GITHUB_WORKSPACE/kernel_workspace/kasumi/src" -maxdepth 1 -type f -name '*.ko' -print
+            find "$GITHUB_WORKSPACE/kernel_workspace/kasumi/src" -maxdepth 1 -type f -printf "%f (%s bytes)\n" | tee "$GITHUB_WORKSPACE/kasumi-diagnostics/kasumi-output-files.txt"
             exit 1
           fi
-
           mkdir -p "$GITHUB_WORKSPACE/kasumi-artifact"
           cp "$KASUMI_KO" "$GITHUB_WORKSPACE/kasumi-artifact/kasumi_lkm.ko"
           cp "$GITHUB_WORKSPACE/kernel_workspace/kasumi/src/Module.symvers" "$GITHUB_WORKSPACE/kasumi-artifact/" 2>/dev/null || true
+          ls -lh "$GITHUB_WORKSPACE/kasumi-artifact/" | tee "$GITHUB_WORKSPACE/kasumi-diagnostics/kasumi-output-files.txt"
+          file "$KASUMI_KO" | tee -a "$GITHUB_WORKSPACE/kasumi-diagnostics/kasumi-output-files.txt"
 
-          echo "✅ Kasumi LKM built successfully:"
-          ls -lh "$GITHUB_WORKSPACE/kasumi-artifact/"
-          file "$GITHUB_WORKSPACE/kasumi-artifact/kasumi_lkm.ko"
-
-      - name: 📦 Save New CCache
-        if: success()
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ${{ env.CCACHE_KEY }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-
-      - name: 📦 Save LTO CCache
-        if: success() && inputs.lto_type == 'thin'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.LDCACHE_DIR }}
-          key: lto-cache-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
-
-      - name: 🧠 Package AK3 ZIP
-        id: create_zip
-        run: |
-          cd kernel_workspace
-          git clone https://github.com/palazik/AnyKernel3 --depth=1
-          rm -rf ./AnyKernel3/.git
-          cd AnyKernel3
-          cp $GITHUB_WORKSPACE/kout/arch/arm64/boot/Image ./Image
-          if [[ ! -f ./Image ]]; then
-            echo "Kernel Image not found, build may have failed."
-            exit 1
-          fi
-          case "${{ inputs.ksu_type }}" in
-            "SukiSU Ultra") KSU_TYPENAME="SukiSU-Ultra" ;;
-            "KernelSU Next") KSU_TYPENAME="KSUNext" ;;
-            *) KSU_TYPENAME="${{ inputs.ksu_type }}" ;;
-          esac
-          if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
-            wget https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip || true
-          fi
-          AK3_NAME=AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_FULL_VERSION }}_palaziks_AOSP-ShiftPorts.zip
-          FULL_VERSION=${{ env.KERNEL_FULL_VERSION }}-palaziks_AOSP-ShiftPorts
-          zip -r ../$AK3_NAME ./*
-          echo "ak3name=$AK3_NAME" >> $GITHUB_OUTPUT
-
-          TIME_NOW="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
-          echo "Author: $GITHUB_ACTOR" > ./ak3.log
-          echo "Repo: $GITHUB_REPOSITORY" >> ./ak3.log
-          echo "Branch: $GITHUB_REF_NAME" >> ./ak3.log
-          echo "Run ID: $GITHUB_RUN_ID" >> ./ak3.log
-          echo "Commit: $GITHUB_SHA" >> ./ak3.log
-          echo "Time: $TIME_NOW" >> ./ak3.log
-          echo "Kernel Ver: $FULL_VERSION" >> ./ak3.log
-          echo "KSU Branch: ${KSU_TYPENAME}" >> ./ak3.log
-          echo "KSU Ver: ${KSUVER}" >> ./ak3.log
-          echo "SuSFS: ${{ github.event.inputs.SUSFS }}" >> ./ak3.log
-          echo "LZ4: ${{ github.event.inputs.lz4_enable }}" >> ./ak3.log
-          echo "LZ4KD: ${{ github.event.inputs.lz4kd_enable }}" >> ./ak3.log
-          echo "BBR&Brutal: ${{ github.event.inputs.bbr_enable }}" >> ./ak3.log
-          echo "BBRv3: true (stock)" >> ./ak3.log
-          echo "ADIOS: ${{ github.event.inputs.adios_enable }}" >> ./ak3.log
-          echo "Re-Kernel: ${{ github.event.inputs.rekernel_enable }}" >> ./ak3.log
-          echo "BBG: ${{ github.event.inputs.baseband_guard }}" >> ./ak3.log
-          echo "NTSync: ${{ github.event.inputs.ntsync_enable }}" >> ./ak3.log
-          echo "Droidspaces: ${{ github.event.inputs.droidspaces_enable }}" >> ./ak3.log
-          echo "IP_SET+IPv6NAT: ${{ github.event.inputs.ip_set_enable }}" >> ./ak3.log
-          echo "TTL: ${{ github.event.inputs.ttl_enable }}" >> ./ak3.log
-          echo "MemOpt: ${{ github.event.inputs.mem_opt_patches }}" >> ./ak3.log
-          echo "BORE: ${{ github.event.inputs.bore_enable }}" >> ./ak3.log
-          zip -z ../$AK3_NAME < ./ak3.log
-
-      - name: 📤 Upload Kasumi LKM
-        if: inputs.ksumi_lkm
+      - name: 📤 Upload Kasumi diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kasumi-lkm-${{ env.KERNEL_FULL_VERSION }}
+          name: kasumi-diagnostics-${{ env.KERNEL_FULL_VERSION }}-${{ github.run_id }}
           path: |
-            ${{ github.workspace }}/kasumi-artifact/kasumi_lkm.ko
-            ${{ github.workspace }}/kasumi-artifact/Module.symvers
-
-      - name: 📤 Upload AnyKernel3
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.create_zip.outputs.ak3name }}
-          path: ${{ github.workspace }}/kernel_workspace/AnyKernel*.zip
-
-      - name: 📝 Make ZRAM module
-        run: |
-          ZRAM_KO=$(find $GITHUB_WORKSPACE/kout -name "zram.ko" | head -1)
-          if [ -z "$ZRAM_KO" ]; then
-            echo "⚠️ zram.ko not found, skipping"
-            exit 0
-          fi
-          curl -L "https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/zram.zip" -o zram.zip
-          unzip -q zram.zip -d zram
-          find zram -name "zram.ko" -exec cp "$ZRAM_KO" {} \;
-          rm -f zram.zip
-          echo "✅ Done!"
-
-      - name: 📤 Upload zram.zip
-        uses: actions/upload-artifact@v4
-        with:
-          name: zram-module
-          path: ./zram/*
-
-      - name: Send Telegram Notification (Success)
-        if: success()
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          DATE=$(date +"%Y-%m-%d %H:%M:%S %Z")
-          COMMIT_HASH=$(echo "${{ github.sha }}" | cut -c1-8)
-          COMMIT_MSG="Workflow Dispatch: ${{ env.KERNEL_FULL_VERSION }}"
-          REPO_URL="https://github.com/${{ github.repository }}"
-          TIME_NOW="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
-
-
-          CAPTION="✅ <b>Kernel Build Successful!</b>
-
-          📱 <b>Device:</b> <code>OnePlus 13 AOSP</code>
-          ⚡ <b>KSU:</b> <code>${{ inputs.ksu_type }}</code>
-          📅 <b>Date:</b> $DATE
-          📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
-          🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/${{ github.sha }}\">$COMMIT_HASH</a>
-          🔧 <b>Kernel features:</b> see workflow configuration"
-
-          ZIP_PATH=$(ls ${{ github.workspace }}/kernel_workspace/AnyKernel*.zip | head -n 1)
-          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendDocument" \
-            -F chat_id="$TELEGRAM_CHAT_ID" \
-            -F document="@$ZIP_PATH" \
-            -F caption="$CAPTION" \
-            -F parse_mode="HTML"
-
-      - name: Send Telegram Notification (Failure)
-        if: failure()
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          DATE=$(date +"%Y-%m-%d %H:%M:%S %Z")
-          COMMIT_MSG="Workflow Dispatch: ${{ env.KERNEL_FULL_VERSION }}"
-          REPO_URL="https://github.com/${{ github.repository }}"
-          CAPTION="❌ <b>Kernel Build Failed!</b>
-
-          📱 <b>Device:</b> <code>OnePlus 13 AOSP</code>
-          ⚡ <b>KSU:</b> <code>${{ inputs.ksu_type }}</code>
-          📅 <b>Date:</b> $DATE
-          📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
-          🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/${{ github.sha }}\">$(echo "${{ github.sha }}" | cut -c1-8)</a>"
-
-          if [ -s /tmp/kbuild.log ]; then
-            tail -n 3000 /tmp/kbuild.log > /tmp/kbuild_tail.log
-            curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendDocument" \
-              -F chat_id="$TELEGRAM_CHAT_ID" \
-              -F document="@/tmp/kbuild_tail.log" \
-              -F caption="$CAPTION" \
-              -F parse_mode="HTML"
-          else
-            curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \
-              -d chat_id="$TELEGRAM_CHAT_ID" \
-              -d text="$CAPTION" \
-              -d parse_mode="HTML"
-          fi
-
-  release:
-    needs: build
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
-      actions: read
-
-    steps:
-      - name: Download ZIP Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build.outputs.ak3name }}
-          path: ./release_zips
-
-      - name: Set Environment Variables
-        run: |
-          FULL_VERSION=${{ env.KERNEL_FULL_VERSION }}-palaziks_AOSP-ShiftPorts
-          echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
-          TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
-          TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
-          echo "TIME=$TIME" >> $GITHUB_ENV
-          echo "TIME_FORM=$TIME_FORM" >> $GITHUB_ENV
-          TAG_HEAD="OPPO-OPlus-Realme-build"
-          echo "TAG_HEAD=$TAG_HEAD" >> $GITHUB_ENV
-          echo "KSU_TYPENAME=${{ inputs.ksu_type }}" >> $GITHUB_ENV
-
-      - name: Create Release
-        if: ${{ github.event.inputs.github_release == 'true' }}
-        id: create_release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cat << 'EOF' > release_notes.md
-          ### 📱 OnePlus 13 ${{ inputs.ksu_type }} SM8750 AOSP Clang
-          > ⚠️ **ROM Compatibility:** Built with **AOSP Clang** for **AOSP-based ROMs** only. To flash on **ColorOS / OxygenOS**, run the `OP13 Kernel Build` workflow yourself (ZyCromerZ Clang builds are for ColorOS / OxygenOS only).
-
-          - **Kernel Version:** ${{ env.FULL_VERSION }}
-          - **Build Time:** ${{ env.TIME_FORM }}
-          - **KSU Branch:** ${{ inputs.ksu_type }}
-          - **SuSFS:** ${{ github.event.inputs.SUSFS }}
-          - **NTSync:** ${{ github.event.inputs.ntsync_enable }}
-          - **Droidspaces:** ${{ github.event.inputs.droidspaces_enable }}
-          - **IP_SET + IPv6 NAT:** ${{ github.event.inputs.ip_set_enable }}
-          - **TTL Target:** ${{ github.event.inputs.ttl_enable }}
-          - **Memory & Scheduler Optimizations:** ${{ github.event.inputs.mem_opt_patches }}
-          - **Multi-Manager:** true
-          - **LZ4:** ${{ github.event.inputs.lz4_enable }}
-          - **LZ4KD:** ${{ github.event.inputs.lz4kd_enable }}
-          - **BTF + eBPF + FUSE-BPF:** ${{ github.event.inputs.bpf_stack_enable }}
-          - **BBR/Brutal:** ${{ github.event.inputs.bbr_enable }}
-          - **BBRv3:** true (stock)
-          - **ADIOS IO:** ${{ github.event.inputs.adios_enable }}
-          - **Baseband Guard:** ${{ github.event.inputs.baseband_guard }}
-          - **Fengchi:** ${{ github.event.inputs.fengchi }}
-          - **Oryon CPU Optimizations:** ${{ github.event.inputs.cpu_opt }}
-          - **Unicode Fix:** true (stock)
-          - **BORE Scheduler:** ${{ github.event.inputs.bore_enable }}
-          - **WireGuard:** ${{ github.event.inputs.wireguard }}
-          - **LRNG v60:** ${{ github.event.inputs.lrng_enable }}
-          - **Wakelock Blocker:** ${{ github.event.inputs.wakelock_blocker }}
-          EOF
-
-          gh release create "${{ env.TAG_HEAD }}-${{ env.TIME }}" \
-            --repo "${{ github.repository }}" \
-            --title "${{ env.TAG_HEAD }}-${{ env.FULL_VERSION }}" \
-            --notes-file release_notes.md \
-            release_zips/AnyKernel3_*.zip
+            ${{ github.workspace }}/kasumi-diagnostics/
+            ${{ github.workspace }}/kasumi-artifact/
+            ${{ github.workspace }}/kernel_workspace/kasumi/src/Module.symvers
+          if-no-files-found: warn
+          retention-days: 14
