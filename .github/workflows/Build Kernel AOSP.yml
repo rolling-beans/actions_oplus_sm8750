@@ -1198,8 +1198,26 @@ jobs:
           EOF
           chmod +x "$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper"
 
+          clean_source_generated_headers() {
+            local label="$1"
+            local generated="$GITHUB_WORKSPACE/kernel_workspace/common/arch/arm64/include/generated"
+            local report="$GITHUB_WORKSPACE/kasumi-diagnostics/source-generated-cleanup.log"
+            if [ -e "$generated" ] || [ -L "$generated" ]; then
+              echo "=== Source-tree generated headers found ($label) ===" | tee -a "$report"
+              find "$generated" -maxdepth 5 -printf '%y %p -> %l\\n' 2>&1 | tee -a "$report" || true
+              rm -rf -- "$generated"
+              echo "Removed generated-only source path: $generated" | tee -a "$report"
+            else
+              echo "No source-tree arch/arm64/include/generated path to remove ($label)." | tee -a "$report"
+            fi
+          }
+
           echo "=== Pre-modules_prepare diagnostics ==="
           "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh" before-modules-prepare
+          # The archive starts without this directory, but the Image build creates it
+          # inside the source tree. Linux 6.6 refuses a new make invocation with it present.
+          clean_source_generated_headers "before modules_prepare"
+          "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh" before-modules-prepare-clean
           cp /tmp/kbuild.log "$GITHUB_WORKSPACE/kasumi-diagnostics/kernel-build.log" 2>/dev/null || true
           {
             echo "KERNEL_FULL_VERSION=${KERNEL_FULL_VERSION}"
@@ -1217,6 +1235,10 @@ jobs:
           set -e
           echo "modules_prepare exit code: $PREP_RC" | tee -a "$GITHUB_WORKSPACE/kasumi-diagnostics/modules-prepare.log"
           "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh" after-modules-prepare
+          # modules_prepare may recreate generated headers in the source tree; remove them
+          # again before the separate external-module make invocation checks tree cleanliness.
+          clean_source_generated_headers "before Kasumi module make"
+          "$GITHUB_WORKSPACE/diagnose-kernel-tree.sh" before-kasumi-modules-clean
           if [ "$PREP_RC" -ne 0 ]; then
             echo "::error::modules_prepare failed with exit code $PREP_RC"
             exit "$PREP_RC"
