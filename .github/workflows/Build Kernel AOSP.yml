@@ -1204,7 +1204,7 @@ jobs:
             local report="$GITHUB_WORKSPACE/kasumi-diagnostics/source-generated-cleanup.log"
             if [ -e "$generated" ] || [ -L "$generated" ]; then
               echo "=== Source-tree generated headers found ($label) ===" | tee -a "$report"
-              find "$generated" -maxdepth 5 -printf '%y %p -> %l\\n' 2>&1 | tee -a "$report" || true
+              find "$generated" -maxdepth 5 -printf '%y %p -> %l\n' 2>&1 | tee -a "$report" || true
               rm -rf -- "$generated"
               echo "Removed generated-only source path: $generated" | tee -a "$report"
             else
