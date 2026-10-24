@@ -400,6 +400,14 @@ jobs:
           echo "KSUVER=$KSUVER" >> $GITHUB_ENV
           echo "✅ ReSukiSU $(git rev-parse --short HEAD) (ver $KSUVER)"
 
+      - name: 🔧 Fix ReSukiSU SELinux policy serialization
+        if: inputs.ksu_type == 'ReSukiSU'
+        run: |
+          cd kernel_workspace/common
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/patch_bakasu_policydb_len.py" KernelSU
+          git -C KernelSU diff --check
+          git -C KernelSU diff --stat
+
       - name: ⚡ Setup SukiSU Ultra
         if: inputs.ksu_type == 'SukiSU Ultra'
         run: |
