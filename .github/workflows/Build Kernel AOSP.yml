@@ -659,7 +659,7 @@ jobs:
           fi
 
 
-          ./common/scripts/config --file "$DEFCONFIG" --disable ZRAM_WRITEBACK --disable SWAP 
+          ./common/scripts/config --file "$DEFCONFIG" --disable ZRAM_WRITEBACK --disable SWAP --enable ZRAM
           ./common/scripts/config --file "$DEFCONFIG" \
             --disable HZ_100 \
             --disable HZ_250 \
