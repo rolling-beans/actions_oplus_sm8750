@@ -1155,6 +1155,45 @@ jobs:
             KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option"\
             gki_defconfig 2>&1 | tee -a /tmp/kbuild.log
 
+          # Compare final Kconfig selections with the requested defconfig entries.
+          # This is diagnostic-only: mismatches warn but do not abort the build.
+          echo "::group::Resolved Kconfig: swap, zram, HZ, NFS/NFSD"
+          CFG="$GITHUB_WORKSPACE/kout/.config"
+          DEFCONFIG_DIAG="arch/arm64/configs/gki_defconfig"
+          REPORT="$GITHUB_WORKSPACE/kernel-config-diagnostics.md"
+          if [ ! -s "$CFG" ]; then
+            echo "::error::Kconfig output is missing: $CFG"
+            exit 1
+          fi
+          {
+            echo "### Effective kernel configuration"
+            echo ""
+            echo "The values below were taken from kout/.config **after** make gki_defconfig."
+            echo ""
+            echo "| Symbol | Last request in gki_defconfig | Actual in .config |"
+            echo "|---|---|---|"
+            for symbol in \
+              SWAP ZRAM ZSMALLOC ZRAM_WRITEBACK ZRAM_MULTI_COMP EXT4_FS \
+              HZ HZ_100 HZ_250 HZ_300 HZ_1000 NO_HZ_IDLE NO_HZ_FULL \
+              NETWORK_FILESYSTEMS NFS_FS NFS_V2 NFS_V3 NFS_V3_ACL \
+              NFS_V4 NFS_V4_1 NFS_V4_2 NFS_V4_2_READ_PLUS \
+              NFSD NFSD_V2 NFSD_V3 NFSD_V3_ACL NFSD_V4
+            do
+              requested=$(grep -E "^(CONFIG_${symbol}=|# CONFIG_${symbol} is not set$)" "$DEFCONFIG_DIAG" | tail -n 1 || true)
+              resolved=$(grep -E "^(CONFIG_${symbol}=|# CONFIG_${symbol} is not set$)" "$CFG" | tail -n 1 || true)
+              [ -n "$requested" ] || requested="(no explicit request)"
+              [ -n "$resolved" ] || resolved="(symbol absent)"
+              printf "| %s | %s | %s |\n" "$symbol" "$requested" "$resolved"
+              if [ "$requested" != "(no explicit request)" ] && [ "$requested" != "$resolved" ]; then
+                echo "::warning title=Kconfig mismatch::${symbol}: requested [$requested], resolved [$resolved]" >&2
+              fi
+            done
+            echo ""
+            echo "Full effective .config is available in the kernel-config-diagnostics artifact."
+          } | tee "$REPORT" | tee -a /tmp/kbuild.log
+          cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
+
           echo "=== Resolved kernel configuration (kout/.config) ==="
           CFG="$GITHUB_WORKSPACE/kout/.config"
           test -s "$CFG" || { echo "::error::Resolved .config not found"; exit 1; }
@@ -1179,6 +1218,16 @@ jobs:
           ccache -s
           df -h
 
+      - name: 📋 Preserve resolved kernel config
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-config-diagnostics-${{ github.run_id }}
+          path: |
+            kout/.config
+            kernel-config-diagnostics.md
+          if-no-files-found: warn
+          retention-days: 14
       - name: 🧩 Build Kasumi LKM
         if: inputs.ksumi_lkm
         run: |
