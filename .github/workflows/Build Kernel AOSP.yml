@@ -1194,16 +1194,8 @@ jobs:
           cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
           echo "::endgroup::"
 
-          echo "=== Resolved kernel configuration (kout/.config) ==="
-          CFG="$GITHUB_WORKSPACE/kout/.config"
-          test -s "$CFG" || { echo "::error::Resolved .config not found"; exit 1; }
-          grep -E '^(CONFIG_(SWAP|ZRAM|ZSMALLOC|ZRAM_WRITEBACK|ZRAM_MULTI_COMP|HZ|HZ_100|HZ_250|HZ_300|HZ_1000|NETWORK_FILESYSTEMS|NFS_FS|NFS_V2|NFS_V3|NFS_V4|NFS_V4_1|NFS_V4_2|NFS_V3_ACL|NFS_V4_2_READ_PLUS|NFSD|NFSD_V2|NFSD_V4|NFSD_V3_ACL|EXT4_FS)=|# CONFIG_(SWAP|ZRAM|ZSMALLOC|ZRAM_WRITEBACK|ZRAM_MULTI_COMP|HZ_100|HZ_250|HZ_300|HZ_1000|NETWORK_FILESYSTEMS|NFS_FS|NFS_V2|NFS_V3|NFS_V4|NFS_V4_1|NFS_V4_2|NFS_V3_ACL|NFS_V4_2_READ_PLUS|NFSD|NFSD_V2|NFSD_V4|NFSD_V3_ACL|EXT4_FS) is not set)' "$CFG" || true
-          echo "=== Active config snapshot ==="
+          # Keep the full resolved config separately for artifact comparison.
           cp "$CFG" "$GITHUB_WORKSPACE/resolved-kernel.config"
-          echo "=== Requested options versus resolved values ==="
-          for option in SWAP ZRAM ZSMALLOC ZRAM_WRITEBACK ZRAM_MULTI_COMP HZ HZ_1000 NFS_FS NFSD EXT4_FS; do
-            grep -E "^(CONFIG_${option}=|# CONFIG_${option} is not set)" "$CFG" || echo "CONFIG_${option}: absent"
-          done
 
           make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC="ccache clang" LD="$(pwd)/ld-wrapper" HOSTLD="$(pwd)/ld-wrapper" \
@@ -1225,6 +1217,7 @@ jobs:
           name: kernel-config-diagnostics-${{ github.run_id }}
           path: |
             kout/.config
+            resolved-kernel.config
             kernel-config-diagnostics.md
           if-no-files-found: warn
           retention-days: 14
