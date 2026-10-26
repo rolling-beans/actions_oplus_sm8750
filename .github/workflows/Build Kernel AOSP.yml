@@ -659,19 +659,6 @@ jobs:
           fi
 
 
-          ./common/scripts/config --file "$DEFCONFIG" \
-            --disable ZRAM_WRITEBACK \
-            --disable SWAP \
-            --enable ZRAM \
-            --enable ZSMALLOC \
-            --enable ZRAM_MULTI_COMP \
-            --enable EXT4_FS
-          ./common/scripts/config --file "$DEFCONFIG" \
-            --disable HZ_100 \
-            --disable HZ_250 \
-            --disable HZ_300 \
-            --enable HZ_1000
-
           for option in \
               NETWORK_FILESYSTEMS \
               NFS_FS \
