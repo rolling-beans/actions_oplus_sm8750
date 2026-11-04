@@ -661,7 +661,7 @@ jobs:
 
           ./common/scripts/config --file "$DEFCONFIG" \
             --disable ZRAM_WRITEBACK \
-            --disable SWAP
+            --enable SWAP
 
       - name: ⚡ Setup NoMount
         run: |
