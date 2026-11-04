@@ -1190,6 +1190,7 @@ jobs:
           name: kernel-config-diagnostics-${{ github.run_id }}
           path: |
             kout/.config
+            kout/vmlinux.symvers
             resolved-kernel.config
             kernel-config-diagnostics.md
           if-no-files-found: warn
