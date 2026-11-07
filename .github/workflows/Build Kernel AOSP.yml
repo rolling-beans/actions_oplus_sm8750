@@ -916,6 +916,16 @@ jobs:
           CONFIG_UNIX_DIAG=y
           CONFIG_PROC_CHILDREN=y
           EOF
+
+          # Build-in options needed for Droidspaces 7.2.x optional features.
+          # CFS_BANDWIDTH depends on FAIR_GROUP_SCHED (and CGROUP_SCHED).
+          ./scripts/config --file arch/arm64/configs/gki_defconfig \
+            --enable CGROUPS \
+            --enable CGROUP_SCHED \
+            --enable FAIR_GROUP_SCHED \
+            --enable CFS_BANDWIDTH \
+            --enable CGROUP_PIDS \
+            --enable MACVLAN
           echo "✅ Droidspaces support enabled"
 
       - name: Add IP_SET + IPv6 NAT Support
@@ -1156,7 +1166,7 @@ jobs:
 
           # Compare final Kconfig selections with the requested defconfig entries.
           # This is diagnostic-only: mismatches warn but do not abort the build.
-          echo "::group::Resolved Kconfig: swap, zram, HZ, NFS/NFSD"
+          echo "::group::Resolved Kconfig: swap, zram, HZ, NFS/NFSD, Droidspaces"
           CFG="$GITHUB_WORKSPACE/kout/.config"
           DEFCONFIG_DIAG="arch/arm64/configs/gki_defconfig"
           REPORT="$GITHUB_WORKSPACE/kernel-config-diagnostics.md"
@@ -1176,7 +1186,8 @@ jobs:
               HZ HZ_100 HZ_250 HZ_300 HZ_1000 NO_HZ_IDLE NO_HZ_FULL \
               NETWORK_FILESYSTEMS NFS_FS NFS_V2 NFS_V3 NFS_V3_ACL \
               NFS_V4 NFS_V4_1 NFS_V4_2 NFS_V4_2_READ_PLUS \
-              NFSD NFSD_V2 NFSD_V3 NFSD_V3_ACL NFSD_V4
+              NFSD NFSD_V2 NFSD_V3 NFSD_V3_ACL NFSD_V4 \
+              CGROUPS CGROUP_SCHED FAIR_GROUP_SCHED CFS_BANDWIDTH CGROUP_PIDS MACVLAN
             do
               requested=$(grep -E "^(CONFIG_${symbol}=|# CONFIG_${symbol} is not set$)" "$DEFCONFIG_DIAG" | tail -n 1 || true)
               resolved=$(grep -E "^(CONFIG_${symbol}=|# CONFIG_${symbol} is not set$)" "$CFG" | tail -n 1 || true)
@@ -1195,6 +1206,16 @@ jobs:
 
           # Keep the full resolved config separately for artifact comparison.
           cp "$CFG" "$GITHUB_WORKSPACE/resolved-kernel.config"
+
+          # Do not silently ship a kernel missing requested Droidspaces controls.
+          if [[ "${{ inputs.droidspaces_enable }}" == "true" ]]; then
+            for symbol in CGROUPS CGROUP_SCHED FAIR_GROUP_SCHED CFS_BANDWIDTH CGROUP_PIDS MACVLAN; do
+              if ! grep -qx "CONFIG_${symbol}=y" "$CFG"; then
+                echo "::error title=Droidspaces Kconfig missing::CONFIG_${symbol}=y not present in resolved kernel config"
+                exit 1
+              fi
+            done
+          fi
 
           make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC="ccache clang" LD="$(pwd)/ld-wrapper" HOSTLD="$(pwd)/ld-wrapper" \
