@@ -917,13 +917,12 @@ jobs:
           CONFIG_PROC_CHILDREN=y
           EOF
 
-          # Build-in options needed for Droidspaces 7.2.x optional features.
-          # CFS_BANDWIDTH depends on FAIR_GROUP_SCHED (and CGROUP_SCHED).
+          # Built-in options for Droidspaces 7.2.x; disable CFS bandwidth for boot regression isolation.
           ./scripts/config --file arch/arm64/configs/gki_defconfig \
             --enable CGROUPS \
             --enable CGROUP_SCHED \
             --enable FAIR_GROUP_SCHED \
-            --enable CFS_BANDWIDTH \
+            --disable CFS_BANDWIDTH \
             --enable CGROUP_PIDS \
             --enable MACVLAN
           echo "✅ Droidspaces support enabled"
@@ -1207,14 +1206,18 @@ jobs:
           # Keep the full resolved config separately for artifact comparison.
           cp "$CFG" "$GITHUB_WORKSPACE/resolved-kernel.config"
 
-          # Do not silently ship a kernel missing requested Droidspaces controls.
+          # Fail if the resolved config differs from the intended Droidspaces regression test.
           if [[ "${{ inputs.droidspaces_enable }}" == "true" ]]; then
-            for symbol in CGROUPS CGROUP_SCHED FAIR_GROUP_SCHED CFS_BANDWIDTH CGROUP_PIDS MACVLAN; do
+            for symbol in CGROUPS CGROUP_SCHED FAIR_GROUP_SCHED CGROUP_PIDS MACVLAN; do
               if ! grep -qx "CONFIG_${symbol}=y" "$CFG"; then
                 echo "::error title=Droidspaces Kconfig missing::CONFIG_${symbol}=y not present in resolved kernel config"
                 exit 1
               fi
             done
+            if ! grep -qx '# CONFIG_CFS_BANDWIDTH is not set' "$CFG"; then
+              echo "::error title=Droidspaces regression check::CONFIG_CFS_BANDWIDTH must be disabled"
+              exit 1
+            fi
           fi
 
           make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
