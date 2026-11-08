@@ -917,13 +917,13 @@ jobs:
           CONFIG_PROC_CHILDREN=y
           EOF
 
-          # Built-in options for Droidspaces 7.2.x; disable CFS bandwidth for boot regression isolation.
+          # GKI vendor-module KMI: CFS bandwidth and PIDs controller are not safe with stock modules.
           ./scripts/config --file arch/arm64/configs/gki_defconfig \
             --enable CGROUPS \
             --enable CGROUP_SCHED \
             --enable FAIR_GROUP_SCHED \
             --disable CFS_BANDWIDTH \
-            --enable CGROUP_PIDS \
+            --disable CGROUP_PIDS \
             --enable MACVLAN
           echo "✅ Droidspaces support enabled"
 
@@ -1208,16 +1208,18 @@ jobs:
 
           # Fail if the resolved config differs from the intended Droidspaces regression test.
           if [[ "${{ inputs.droidspaces_enable }}" == "true" ]]; then
-            for symbol in CGROUPS CGROUP_SCHED FAIR_GROUP_SCHED CGROUP_PIDS MACVLAN; do
+            for symbol in CGROUPS CGROUP_SCHED FAIR_GROUP_SCHED MACVLAN; do
               if ! grep -qx "CONFIG_${symbol}=y" "$CFG"; then
                 echo "::error title=Droidspaces Kconfig missing::CONFIG_${symbol}=y not present in resolved kernel config"
                 exit 1
               fi
             done
-            if ! grep -qx '# CONFIG_CFS_BANDWIDTH is not set' "$CFG"; then
-              echo "::error title=Droidspaces regression check::CONFIG_CFS_BANDWIDTH must be disabled"
-              exit 1
-            fi
+            for symbol in CFS_BANDWIDTH CGROUP_PIDS; do
+              if ! grep -qx "# CONFIG_${symbol} is not set" "$CFG"; then
+                echo "::error title=Droidspaces GKI KMI check::CONFIG_${symbol} must be disabled for stock vendor modules"
+                exit 1
+              fi
+            done
           fi
 
           make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
