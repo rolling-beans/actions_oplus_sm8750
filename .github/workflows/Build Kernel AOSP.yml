@@ -138,14 +138,6 @@ on:
         required: false
         type: boolean
         default: true
-      kmi_guard_mode:
-        description: 'KMI Guard: audit=report only; enforce=block without approved vendor manifest'
-        required: false
-        type: choice
-        default: audit
-        options:
-          - audit
-          - enforce
       ip_set_enable:
         description: 'Enable IP_SET + IPv6 NAT (advanced firewall + IPv6 masquerade)'
         required: false
@@ -1279,6 +1271,8 @@ jobs:
           retention-days: 14
       - name: 🛡️ KMI Guard (deterministic module version checks)
         shell: bash
+        env:
+          KMI_MODE: ${{ vars.KMI_GUARD_MODE || 'audit' }}
         run: |
           set -euo pipefail
           EVIDENCE="$GITHUB_WORKSPACE/kmi-evidence"
@@ -1312,7 +1306,7 @@ jobs:
           args=(audit
             --symvers "$SYMVERS"
             --config "$GITHUB_WORKSPACE/kout/.config"
-            --mode "${{ inputs.kmi_guard_mode }}"
+            --mode "$KMI_MODE"
             --report-json "$EVIDENCE/report.json"
             --report-md "$EVIDENCE/report.md")
           MANIFEST="$GITHUB_WORKSPACE/kmi-tools/kmi/vendor-manifest.json"
