@@ -204,6 +204,10 @@ def audit(args):
             raise ValueError("invalid vendor manifest schema")
         if not manifest["modules"]:
             report["unverified"].append("vendor manifest has no modules")
+        for source in manifest.get("sources", []):
+            if source.get("available") is False:
+                report["unverified"].append(
+                    f"device source {source.get('label', '<unknown>')} was inaccessible during capture")
         if not args.approved_manifest or not Path(args.approved_manifest).is_file():
             report["unverified"].append(
                 "Vendor manifest source/firmware coverage not approved; audit only")
