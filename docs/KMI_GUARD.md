@@ -14,9 +14,10 @@ References:
 ## Integration and operation
 
 - A manual kernel build now collects full vmlinux.symvers, kernel .config, selected DWARF type layouts (if vmlinux/DWARF are available), and machine-readable and Markdown audit reports in a separate GitHub Actions artifact named kmi-guard-DATE.
-- GitHub Actions choice kmi_guard_mode has two values:
-  - audit (initial default): produce report and allow packaging even if the device vendor data is missing. Status UNVERIFIED is **not a pass**.
-  - enforce: abort the build before AnyKernel3 ZIP packaging if any definite module rejection or any coverage gap is found (including missing vendor manifest). Type layout risks remain report-only and require expert review.
+- Repository Actions variable **KMI_GUARD_MODE** (Settings → Secrets and variables → Actions → Variables) has two supported values:
+  - audit (default when unset): produce report and allow packaging even if device vendor evidence is missing. Status UNVERIFIED is **not a pass**.
+  - enforce: abort before AnyKernel3 ZIP packaging on a definite module rejection or unverified module evidence (including missing vendor manifest). Type layout risks remain report-only and require expert review.
+- A separate workflow_dispatch input cannot be added without removing another: this kernel workflow already uses GitHub's limit of 25 manual inputs.
 - A full ABI graph comparison by Android STG, and complete vendor-module loading policy analysis, are **not yet implemented**. Do not infer compatibility from a clean CRC comparison.
 - No proprietary .ko binaries need to be committed to the public repository. Only metadata is used.
 
