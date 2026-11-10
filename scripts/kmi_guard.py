@@ -83,18 +83,35 @@ def module_names(paths):
 
 
 def capture(args):
-    roots = [Path(p) for p in args.modules_root]
-    if any(not root.is_dir() for root in roots):
-        raise ValueError("one or more module roots do not exist: " + str(roots))
-    if len({str(p.resolve()) for p in roots}) != len(roots):
+    roots = []
+    for item in args.modules_root:
+        if "=" in item:
+            label, location = item.split("=", 1)
+        else:
+            location = item
+            label = Path(location).name
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", label):
+            raise ValueError(f"invalid module source label: {label!r}")
+        root = Path(location)
+        if not root.is_dir():
+            raise ValueError(f"modules root does not exist: {root}")
+        roots.append((label, root))
+    if len(set(label for label, _ in roots)) != len(roots):
+        raise ValueError("duplicate module source labels; use label=PATH")
+    if len(set(str(root.resolve()) for _, root in roots)) != len(roots):
         raise ValueError("duplicate module roots")
     startup = module_names(args.modules_load)
     critical = module_names(args.critical_list)
     entries = []
-    for root in roots:
+    sources = []
+    for label, root in roots:
+      source_count = 0
       for path in sorted(root.rglob("*")):
         if not path.is_file() or not path.name.endswith(MODULE_EXTENSIONS):
             continue
+        if path.is_symlink():
+            continue  # Never read targets outside the explicitly collected roots.
+        source_count += 1
         output, err = command([args.modprobe, "--show-modversions", str(path)])
         required = {}
         for line in output.splitlines():
@@ -103,7 +120,7 @@ def capture(args):
                 required[match[2]] = f"0x{int(match[1], 16):08x}"
         vermagic, ver_error = command([args.modinfo, "-F", "vermagic", str(path)])
         entries.append({
-            "path": str(root.name + "/" + str(path.relative_to(root))),
+            "path": str(label + "/" + str(path.relative_to(root))),
             "module_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "boot_requested": module_key(path.name) in startup,
             "boot_critical_reviewed": module_key(path.name) in critical,
@@ -111,9 +128,11 @@ def capture(args):
             "required_crcs": dict(sorted(required.items())),
             "capture_error": err or ver_error or ("no modversions found" if not required else ""),
         })
+      sources.append({"label": label, "module_count": source_count})
     result = {
         "schema_version": 1,
         "device_build_fingerprint": args.fingerprint or "UNVERIFIED",
+        "sources": sources,
         "modules": entries,
     }
     dest = Path(args.output)
@@ -176,6 +195,22 @@ def audit(args):
             raise ValueError("invalid vendor manifest schema")
         if not manifest["modules"]:
             report["unverified"].append("vendor manifest has no modules")
+        if not args.approved_manifest or not Path(args.approved_manifest).is_file():
+            report["unverified"].append(
+                "Vendor manifest source/firmware coverage not approved; audit only")
+        else:
+            approval = json.loads(Path(args.approved_manifest).read_text())
+            actual_sha256 = hashlib.sha256(Path(args.vendor_manifest).read_bytes()).hexdigest()
+            source_labels = [s.get("label") for s in manifest.get("sources", [])]
+            if (approval.get("schema_version") != 1 or
+                approval.get("manifest_sha256") != actual_sha256 or
+                approval.get("device_build_fingerprint") != manifest.get("device_build_fingerprint") or
+                approval.get("verified_sources") != source_labels or
+                approval.get("startup_load_lists_verified") is not True or
+                len(source_labels) != len(set(source_labels)) or
+                not source_labels):
+                report["unverified"].append(
+                    "Vendor manifest approval does not match SHA-256, firmware, source list, or startup policy")
         if manifest.get("device_build_fingerprint") in ("", None, "UNVERIFIED"):
             report["unverified"].append("vendor build fingerprint not verified")
         for module in manifest["modules"]:
@@ -280,6 +315,7 @@ def main(argv=None):
     check.add_argument("--config", required=True)
     check.add_argument("--baseline-symvers")
     check.add_argument("--vendor-manifest")
+    check.add_argument("--approved-manifest", help="separately reviewed SHA-256 + source coverage")
     check.add_argument("--baseline-layouts")
     check.add_argument("--candidate-layouts")
     check.add_argument("--mode", choices=("audit", "enforce"), default="audit")
