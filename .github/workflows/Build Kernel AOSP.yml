@@ -1310,9 +1310,11 @@ jobs:
             --report-json "$EVIDENCE/report.json"
             --report-md "$EVIDENCE/report.md")
           MANIFEST="$GITHUB_WORKSPACE/kmi-tools/kmi/vendor-manifest.json"
+          APPROVAL="$GITHUB_WORKSPACE/kmi-tools/kmi/approved-vendor-manifest.json"
           BASELINE="$GITHUB_WORKSPACE/kmi-tools/kmi/reference-vmlinux.symvers"
           LAYOUT_REF="$GITHUB_WORKSPACE/kmi-tools/kmi/reference-type-layouts.txt"
           if [ -s "$MANIFEST" ]; then args+=(--vendor-manifest "$MANIFEST"); fi
+          if [ -s "$APPROVAL" ]; then args+=(--approved-manifest "$APPROVAL"); fi
           if [ -s "$BASELINE" ]; then args+=(--baseline-symvers "$BASELINE"); fi
           if [ -s "$LAYOUT_REF" ]; then
             args+=(--baseline-layouts "$LAYOUT_REF" --candidate-layouts "$LAYOUTS")
