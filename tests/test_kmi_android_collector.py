@@ -47,6 +47,24 @@ class AndroidKmiCollectorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no MODVERSIONS"):
                 collect.parse_module(self.root / "a.ko")
 
+    def test_vendor_load_list_in_separate_etc_directory(self):
+        root = self.root / "vendor_dlkm" / "lib" / "modules"
+        root.mkdir(parents=True)
+        (root / "foo-bar.ko").write_bytes(b"not-an-elf")
+        policy = self.root / "vendor_dlkm" / "etc"
+        policy.mkdir(parents=True)
+        (policy / "modules.load").write_text("foo-bar.ko\\n")
+        args = type("Arg", (), {"root": [("vendor", str(root))],
+                                "output": str(self.root / "capture.json")})()
+        with patch.dict(collect.LOAD_LIST_DIRS, {"vendor": (str(policy),)}), \\
+             patch.object(collect, "prop", return_value="test-fingerprint"):
+            rc = collect.collect(args)
+        manifest = json.loads((self.root / "capture.json").read_text())
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(manifest["load_lists"]), 1)
+        self.assertEqual(manifest["load_lists"][0]["entries"], ["foo-bar.ko"])
+        self.assertTrue(manifest["modules"][0]["boot_requested"])
+
     def test_metadata_only_no_modules_copied(self):
         source = self.root / "vendor"
         source.mkdir()
