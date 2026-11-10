@@ -44,9 +44,9 @@ class AndroidKmiCollectorTests(unittest.TestCase):
     def test_nobits_section_has_no_file_bytes(self):
         # ELF64 with a .bss section whose memory size exceeds file length.
         # SHT_NOBITS carries no actual payload and must not be rejected.
-        strings = b"\\x00.shstrtab\\x00.bss\\x00"
+        strings = b"\x00.shstrtab\x00.bss\x00"
         hdr = bytearray(64)
-        hdr[:6] = b"\\x7fELF\\x02\\x01"
+        hdr[:6] = b"\x7fELF\x02\x01"
         struct.pack_into("<Q", hdr, 40, 64)
         struct.pack_into("<HHH", hdr, 58, 64, 3, 1)
         def section(name_id, typ, offset, size):
