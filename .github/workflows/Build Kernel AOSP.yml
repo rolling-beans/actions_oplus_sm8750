@@ -16,6 +16,7 @@ on:
   push:
     branches:
       - master
+  pull_request:
   workflow_dispatch:
     inputs:
       ksu_type:
@@ -136,6 +137,14 @@ on:
         required: false
         type: boolean
         default: true
+      kmi_guard_mode:
+        description: 'KMI Guard: audit=report only; enforce=block without approved vendor manifest'
+        required: false
+        type: choice
+        default: audit
+        options:
+          - audit
+          - enforce
       ip_set_enable:
         description: 'Enable IP_SET + IPv6 NAT (advanced firewall + IPv6 masquerade)'
         required: false
@@ -160,6 +169,18 @@ on:
 
       
 jobs:
+  kmi-guard-tests:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Unit tests (CRC rejection vs incomplete evidence)
+        run: PYTHONPATH=. python3 -m unittest discover -s tests -v
+
   push-guard:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -1124,6 +1145,15 @@ jobs:
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
           echo "CONFIG_LOCALVERSION_AUTO=n" >> ./common/arch/arm64/configs/gki_defconfig
 
+      - name: 📥 Checkout KMI Guard script and approved evidence
+        uses: actions/checkout@v4
+        with:
+          path: kmi-tools
+          sparse-checkout: |
+            scripts
+            kmi
+          persist-credentials: false
+
       - name: 🔨 Build Kernel
         run: |
           WORKDIR="$(pwd)"
@@ -1246,6 +1276,74 @@ jobs:
             kernel-config-diagnostics.md
           if-no-files-found: warn
           retention-days: 14
+      - name: 🛡️ KMI Guard (deterministic module version checks)
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/kmi-evidence"
+          mkdir -p "$EVIDENCE"
+          SYMVERS="$GITHUB_WORKSPACE/kout/vmlinux.symvers"
+          if [ ! -s "$SYMVERS" ] && [ -s "$GITHUB_WORKSPACE/kout/Module.symvers" ]; then
+            SYMVERS="$GITHUB_WORKSPACE/kout/Module.symvers"
+          fi
+          if [ ! -s "$SYMVERS" ]; then
+            echo "::error title=KMI evidence missing::No vmlinux.symvers / Module.symvers"
+            exit 2
+          fi
+          cp "$SYMVERS" "$EVIDENCE/vmlinux.symvers"
+          cp "$GITHUB_WORKSPACE/kout/.config" "$EVIDENCE/kernel.config"
+
+          # Diagnostic only. Full STG comparison requires an approved reference ABI.
+          LAYOUTS="$EVIDENCE/type-layouts.txt"
+          VMLINUX="$GITHUB_WORKSPACE/kout/vmlinux"
+          if [ -s "$VMLINUX" ]; then
+            for type in task_struct cgroup cfs_rq rq task_group; do
+              printf '=== %s ===\n' "$type" >> "$LAYOUTS"
+              if ! pahole -C "$type" "$VMLINUX" >> "$LAYOUTS" 2>/dev/null; then
+                echo "UNAVAILABLE (not evidence of compatibility)" >> "$LAYOUTS"
+              fi
+            done
+          else
+            echo "vmlinux missing: type layout analysis UNAVAILABLE" > "$LAYOUTS"
+          fi
+
+          GUARD="$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_guard.py"
+          args=(audit
+            --symvers "$SYMVERS"
+            --config "$GITHUB_WORKSPACE/kout/.config"
+            --mode "${{ inputs.kmi_guard_mode }}"
+            --report-json "$EVIDENCE/report.json"
+            --report-md "$EVIDENCE/report.md")
+          MANIFEST="$GITHUB_WORKSPACE/kmi-tools/kmi/vendor-manifest.json"
+          BASELINE="$GITHUB_WORKSPACE/kmi-tools/kmi/reference-vmlinux.symvers"
+          LAYOUT_REF="$GITHUB_WORKSPACE/kmi-tools/kmi/reference-type-layouts.txt"
+          if [ -s "$MANIFEST" ]; then args+=(--vendor-manifest "$MANIFEST"); fi
+          if [ -s "$BASELINE" ]; then args+=(--baseline-symvers "$BASELINE"); fi
+          if [ -s "$LAYOUT_REF" ]; then
+            args+=(--baseline-layouts "$LAYOUT_REF" --candidate-layouts "$LAYOUTS")
+          fi
+
+          set +e
+          python3 "$GUARD" "${args[@]}"
+          rc=$?
+          set -e
+          if [ -s "$EVIDENCE/report.md" ]; then
+            cat "$EVIDENCE/report.md" >> "$GITHUB_STEP_SUMMARY"
+            if grep -q 'Status: UNVERIFIED' "$EVIDENCE/report.md"; then
+              echo "::warning title=KMI unverified::No proven device vendor-module baseline; do not interpret a successful build as KMI-compatible"
+            fi
+          fi
+          exit "$rc"
+
+      - name: 📤 Upload KMI Guard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmi-guard-${{ github.run_id }}
+          path: kmi-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: 🧩 Build Kasumi LKM
         if: inputs.ksumi_lkm
         run: |
@@ -1394,6 +1492,9 @@ jobs:
           echo "BBG: ${{ github.event.inputs.baseband_guard }}" >> ./ak3.log
           echo "NTSync: ${{ github.event.inputs.ntsync_enable }}" >> ./ak3.log
           echo "Droidspaces: ${{ github.event.inputs.droidspaces_enable }}" >> ./ak3.log
+          if [ -f "$GITHUB_WORKSPACE/kmi-evidence/report.json" ]; then
+            echo "KMI Guard: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$GITHUB_WORKSPACE/kmi-evidence/report.json")" >> ./ak3.log
+          fi
           echo "IP_SET+IPv6NAT: ${{ github.event.inputs.ip_set_enable }}" >> ./ak3.log
           echo "TTL: ${{ github.event.inputs.ttl_enable }}" >> ./ak3.log
           echo "MemOpt: ${{ github.event.inputs.mem_opt_patches }}" >> ./ak3.log
