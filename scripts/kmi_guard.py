@@ -6,6 +6,7 @@ module loading; it does not prove Android will fail to boot. No vendor
 manifest means UNVERIFIED, never PASS. Standard-library Python only.
 """
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -15,6 +16,7 @@ from pathlib import Path
 CRC_LINE = re.compile(r"^\s*(0x[0-9a-fA-F]+)\s+(\S+)\s*$")
 CONFIG_LINE = re.compile(r"^CONFIG_([A-Za-z0-9_]+)=(.*)$")
 KNOWN_RISK_CONFIGS = ("CFS_BANDWIDTH", "CGROUP_PIDS")
+MODULE_EXTENSIONS = (".ko", ".ko.gz", ".ko.xz", ".ko.zst")
 
 
 def symbol_table(path):
@@ -60,24 +62,39 @@ def command(argv):
                          else proc.stderr.strip() or f"exit {proc.returncode}")
 
 
+def module_key(name):
+    """Normalize compression suffix and modprobe-equivalent '-' vs '_'."""
+    base = Path(name).name
+    for ext in MODULE_EXTENSIONS:
+        if base.endswith(ext):
+            base = base[:-len(ext)]
+            break
+    return base.replace("-", "_")
+
+
 def module_names(paths):
     names = set()
     for path in paths:
         for line in Path(path).read_text(errors="replace").splitlines():
             words = line.split("#", 1)[0].strip().split()
             if words:
-                names.add(Path(words[0]).name)
+                names.add(module_key(words[0]))
     return names
 
 
 def capture(args):
-    root = Path(args.modules_root)
-    if not root.is_dir():
-        raise ValueError(f"modules root does not exist: {root}")
+    roots = [Path(p) for p in args.modules_root]
+    if any(not root.is_dir() for root in roots):
+        raise ValueError("one or more module roots do not exist: " + str(roots))
+    if len({str(p.resolve()) for p in roots}) != len(roots):
+        raise ValueError("duplicate module roots")
     startup = module_names(args.modules_load)
     critical = module_names(args.critical_list)
     entries = []
-    for path in sorted(root.rglob("*.ko")):
+    for root in roots:
+      for path in sorted(root.rglob("*")):
+        if not path.is_file() or not path.name.endswith(MODULE_EXTENSIONS):
+            continue
         output, err = command([args.modprobe, "--show-modversions", str(path)])
         required = {}
         for line in output.splitlines():
@@ -86,9 +103,10 @@ def capture(args):
                 required[match[2]] = f"0x{int(match[1], 16):08x}"
         vermagic, ver_error = command([args.modinfo, "-F", "vermagic", str(path)])
         entries.append({
-            "path": str(path.relative_to(root)),
-            "boot_requested": path.name in startup,
-            "boot_critical_reviewed": path.name in critical,
+            "path": str(root.name + "/" + str(path.relative_to(root))),
+            "module_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "boot_requested": module_key(path.name) in startup,
+            "boot_critical_reviewed": module_key(path.name) in critical,
             "vermagic": vermagic.strip(),
             "required_crcs": dict(sorted(required.items())),
             "capture_error": err or ver_error or ("no modversions found" if not required else ""),
@@ -249,7 +267,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
     cap = sub.add_parser("capture")
-    cap.add_argument("--modules-root", required=True)
+    cap.add_argument("--modules-root", required=True, action="append",
+                     help="repeat for vendor, odm, vendor_boot and other module directories")
     cap.add_argument("--modules-load", action="append", default=[])
     cap.add_argument("--critical-list", action="append", default=[])
     cap.add_argument("--fingerprint", default="")
