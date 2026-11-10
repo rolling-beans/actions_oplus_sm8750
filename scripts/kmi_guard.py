@@ -238,6 +238,9 @@ def audit(args):
             report["vendor_module_count"] += 1
             path = module.get("path", "<unknown>")
             requirements = module.get("required_crcs", {})
+            if module.get("export_capture_note"):
+                report["unverified"].append(
+                    f"{path}: export CRCs not fully verified: {module['export_capture_note']}")
             if not isinstance(requirements, dict) or not requirements or module.get("capture_error"):
                 report["unverified"].append(
                     f"{path}: module imports cannot be verified: {module.get('capture_error', '')}"
