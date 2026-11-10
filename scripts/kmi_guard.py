@@ -118,6 +118,12 @@ def capture(args):
             match = CRC_LINE.fullmatch(line)
             if match:
                 required[match[2]] = f"0x{int(match[1], 16):08x}"
+        export_output, export_err = command([args.modprobe, "--show-exports", str(path)])
+        provided = {}
+        for line in export_output.splitlines():
+            match = CRC_LINE.fullmatch(line)
+            if match:
+                provided[match[2]] = f"0x{int(match[1], 16):08x}"
         vermagic, ver_error = command([args.modinfo, "-F", "vermagic", str(path)])
         entries.append({
             "path": str(label + "/" + str(path.relative_to(root))),
@@ -126,6 +132,8 @@ def capture(args):
             "boot_critical_reviewed": module_key(path.name) in critical,
             "vermagic": vermagic.strip(),
             "required_crcs": dict(sorted(required.items())),
+            "exported_crcs": dict(sorted(provided.items())),
+            "export_capture_note": export_err if not provided else "",
             "capture_error": err or ver_error or ("no modversions found" if not required else ""),
         })
       sources.append({"label": label, "module_count": source_count})
@@ -159,6 +167,7 @@ def audit(args):
         "candidate_export_count": len(exports),
         "vendor_module_count": 0,
         "checked_import_count": 0,
+        "checked_vendor_provider_imports": 0,
         "definite_module_rejections": [],
         "potential_risks": [],
         "unverified": [],
@@ -213,6 +222,14 @@ def audit(args):
                     "Vendor manifest approval does not match SHA-256, firmware, source list, or startup policy")
         if manifest.get("device_build_fingerprint") in ("", None, "UNVERIFIED"):
             report["unverified"].append("vendor build fingerprint not verified")
+
+        # Resolve in-vendor dependencies from the exact same approved .ko set.
+        vendor_providers = {}
+        for module in manifest["modules"]:
+            for name, crc in module.get("exported_crcs", {}).items():
+                vendor_providers.setdefault(name, []).append(
+                    (module.get("path", "<unknown>"), crc))
+
         for module in manifest["modules"]:
             report["vendor_module_count"] += 1
             path = module.get("path", "<unknown>")
@@ -227,7 +244,23 @@ def audit(args):
                 # Only baseline-known vmlinux exports and the special module_layout
                 # are definite missing-export errors.
                 if name not in exports and name not in baseline and name != "module_layout":
-                    report["unverified"].append(f"{path}: provider unknown for {name}")
+                    providers = vendor_providers.get(name, [])
+                    unique = {value for _, value in providers}
+                    if len(providers) == 1 and len(unique) == 1:
+                        actual_provider, provider_crc = providers[0]
+                        report["checked_vendor_provider_imports"] += 1
+                        if not crc_equal(expected, provider_crc):
+                            report["definite_module_rejections"].append({
+                                "module": path, "symbol": name,
+                                "expected_crc": expected, "kernel_crc": provider_crc,
+                                "provider": actual_provider,
+                                "boot_requested": bool(module.get("boot_requested")),
+                                "boot_critical_reviewed": bool(module.get("boot_critical_reviewed")),
+                                "reason": "vendor provider MODVERSIONS CRC mismatch",
+                            })
+                        continue
+                    report["unverified"].append(
+                        f"{path}: provider unknown or ambiguous for {name}")
                     continue
                 report["checked_import_count"] += 1
                 actual = exports.get(name)
@@ -269,6 +302,7 @@ def audit(args):
         "- Candidate kernel exports: " + str(len(exports)),
         "- Vendor modules in manifest: " + str(report["vendor_module_count"]),
         "- Imports compared against vmlinux: " + str(report["checked_import_count"]),
+        "- Imports compared against unique vendor providers: " + str(report["checked_vendor_provider_imports"]),
         "- Certain module-load rejections: " + str(len(report["definite_module_rejections"])),
         "- Potential risk findings: " + str(len(report["potential_risks"])),
         "- Unverified entries: " + str(len(report["unverified"])), "",
