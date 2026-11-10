@@ -103,18 +103,9 @@ def parse_module(path):
         if record.startswith(b"vermagic="):
             vermagic = record[len(b"vermagic="):].decode("utf-8", "replace")
     required = {}
-    if "__versions" in data:
-        blob, stride = data["__versions"]
-        # Linux 6.6 basic MODVERSIONS: unsigned long CRC + 64-byte symbol.
-        stride = stride or 72
-        if stride < 72 or len(blob) % stride:
-            raise ValueError("unsupported __versions entry size")
-        for offset in range(0, len(blob), stride):
-            crc = struct.unpack_from("<Q", blob, offset)[0] & 0xffffffff
-            name = blob[offset + 8:offset + 72].split(b"\0", 1)[0]
-            if name:
-                required[name.decode("utf-8", "replace")] = f"0x{crc:08x}"
-    elif "__version_ext_names" in data and "__version_ext_crcs" in data:
+    # Modern kernels may contain both layouts. Prefer the explicitly
+    # separated extended form when it is internally consistent.
+    if "__version_ext_names" in data and "__version_ext_crcs" in data:
         names = [n.decode("utf-8", "replace") for n in
                  data["__version_ext_names"][0].split(b"\0") if n]
         crc_bytes = data["__version_ext_crcs"][0]
@@ -122,6 +113,28 @@ def parse_module(path):
             raise ValueError("extended MODVERSIONS names/CRC count mismatch")
         for i, name in enumerate(names):
             required[name] = f"0x{struct.unpack_from('<I', crc_bytes, 4 * i)[0]:08x}"
+    elif "__versions" in data:
+        blob, elf_stride = data["__versions"]
+        # The record's name[] size varies across kernel versions.
+        # Linux 6.6/6.17 commonly uses 64-byte records (8+56), not 72.
+        symbol_pat = re.compile(rb"[A-Za-z_][A-Za-z0-9_.$]*\Z")
+        candidates = [elf_stride] if elf_stride else [64, 72, 128]
+        for stride in candidates:
+            if stride < 16 or len(blob) % stride:
+                continue
+            parsed = {}
+            for offset in range(0, len(blob), stride):
+                crc = struct.unpack_from("<Q", blob, offset)[0] & 0xffffffff
+                record = blob[offset + 8:offset + stride]
+                name = record.split(b"\0", 1)[0]
+                if not symbol_pat.fullmatch(name):
+                    break
+                parsed[name.decode("ascii")] = f"0x{crc:08x}"
+            else:
+                required = parsed
+                break
+        if not required:
+            raise ValueError("unsupported __versions entry size or names")
     else:
         raise ValueError("no MODVERSIONS section in module")
     if not required:
@@ -219,9 +232,9 @@ def main(argv=None):
                         help="explicit module source; repeat as needed")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
+    selected_roots = args.root or [f"{label}={path}" for label, path in DEFAULT_SOURCES.items()]
     args.root = []
-    for arg in (parser.parse_args(argv).root or
-                [f"{label}={path}" for label, path in DEFAULT_SOURCES.items()]):
+    for arg in selected_roots:
         if "=" not in arg:
             parser.error("--root must have LABEL=PATH form")
         label, path = arg.split("=", 1)
