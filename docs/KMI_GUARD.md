@@ -21,6 +21,40 @@ References:
 - A full ABI graph comparison by Android STG, and complete vendor-module loading policy analysis, are **not yet implemented**. Do not infer compatibility from a clean CRC comparison.
 - No proprietary .ko binaries need to be committed to the public repository. Only metadata is used.
 
+## Rooted Android / Termux: metadata-only capture
+
+The Python standard-library collector can run **on the device**, avoiding
+transporting proprietary .ko files to a computer. It never calls insmod,
+modprobe, dd, mount, flashing tools, or any network API.
+
+On the phone, after reviewing scripts/kmi_collect_android.py, run the local
+file with Termux Python 3:
+
+    python3 scripts/kmi_collect_android.py \
+      --output /sdcard/Download/op13-kmi-vendor-manifest.json
+
+The script scans /vendor/lib/modules, /odm/lib/modules and /lib/modules where
+accessible, and reads available modules.load* files. It records per-.ko SHA-256,
+required MODVERSIONS CRCs, vermagic, build fingerprint and inventory. It **never
+includes .ko bytes**. It does not install tools or request root by itself.
+For .ko.zst, the optional zstd CLI is required; otherwise those modules stay
+UNVERIFIED. If SELinux denies access, an explicit reviewed invocation via
+Termux's sudo may be appropriate. Do not disable SELinux to collect this data.
+
+For direct access to additional extracted ramdisk directories use repeated
+--root LABEL=PATH (the explicit roots then replace defaults). This script
+parses 64-bit little-endian ELF and both 64-byte basic and modern extended
+modversion formats. A mismatched/unsupported format is reported, not guessed.
+
+IMPORTANT: after boot, vendor_boot's first-stage /lib/modules directory may
+be inaccessible. An unavailable source is **not** evidence that it contains
+zero modules. In that case, obtain the exact matching vendor_boot ramdisk
+metadata separately before approving full coverage.
+
+The direct Android collector currently leaves exported_crcs empty. To verify
+vendor-to-vendor links as well, run the Linux-host capture with the actual
+binaries offline. The host tool uses kmod --show-modversions and --show-exports.
+
 ## One-time device input (needed for strict enforcement)
 
 The GitHub repository intentionally does not include vendor modules. Collect the .ko files from the **exact active system firmware** (vendor_dlkm/odm_dlkm and any separately supplied vendor modules) without editing or flashing the device, and copy them to a trusted Linux environment. Preserve module paths and firmware/build fingerprint. If the module list has not been collected yet, **stay in audit mode**.
