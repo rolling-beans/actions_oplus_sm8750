@@ -186,6 +186,53 @@ class KmiGuardTests(unittest.TestCase):
         self.assertFalse(rows[1]["boot_requested"])
         self.assertEqual(rows[0]["module_sha256"], hashlib.sha256(b"compressed").hexdigest())
 
+    def test_vendor_to_vendor_version_match(self):
+        manifest = self.manifest(imports={"vendor_func": "0xaabbccdd"})
+        payload = json.loads(manifest.read_text())
+        payload["modules"].append({
+            "path": "vendor_dlkm/provider.ko",
+            "boot_requested": True,
+            "required_crcs": {"module_layout": "0x12345678"},
+            "exported_crcs": {"vendor_func": "0xaabbccdd"},
+        })
+        payload["sources"][0]["module_count"] = 2
+        manifest.write_text(json.dumps(payload))
+        rc, report = self.run_audit(manifest, "enforce")
+        self.assertEqual(rc, 0)
+        self.assertEqual(report["status"], "NO_CHECKED_MISMATCH")
+        self.assertEqual(report["checked_vendor_provider_imports"], 1)
+
+    def test_vendor_to_vendor_version_mismatch(self):
+        manifest = self.manifest(imports={"vendor_func": "0x00000001"})
+        payload = json.loads(manifest.read_text())
+        payload["modules"].append({
+            "path": "vendor_dlkm/provider.ko",
+            "boot_requested": True,
+            "required_crcs": {"module_layout": "0x12345678"},
+            "exported_crcs": {"vendor_func": "0xaabbccdd"},
+        })
+        manifest.write_text(json.dumps(payload))
+        rc, report = self.run_audit(manifest, "enforce")
+        self.assertEqual(rc, 3)
+        self.assertEqual(report["status"], "MODULE_LOAD_REJECTION")
+        self.assertEqual(report["definite_module_rejections"][0]["provider"],
+                         "vendor_dlkm/provider.ko")
+
+    def test_ambiguous_vendor_providers_are_not_pass(self):
+        manifest = self.manifest(imports={"vendor_func": "0xaabbccdd"})
+        payload = json.loads(manifest.read_text())
+        for i in range(2):
+            payload["modules"].append({
+                "path": "vendor_dlkm/provider%d.ko" % i,
+                "boot_requested": True,
+                "required_crcs": {"module_layout": "0x12345678"},
+                "exported_crcs": {"vendor_func": "0xaabbccdd"},
+            })
+        manifest.write_text(json.dumps(payload))
+        rc, report = self.run_audit(manifest, "enforce")
+        self.assertEqual(rc, 3)
+        self.assertEqual(report["status"], "UNVERIFIED")
+
     def test_layout_difference_is_risk_not_proven_rejection(self):
         (self.path / "before").write_text("old\n")
         (self.path / "after").write_text("new\n")
