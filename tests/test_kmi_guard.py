@@ -128,6 +128,45 @@ class KmiGuardTests(unittest.TestCase):
         self.assertNotIn("vendor_private", exports)
         self.assertEqual(exports["schedule"], "0xabcdef01")
 
+    def test_compressed_module_name_matches_modules_load(self):
+        self.assertEqual(kmi_guard.module_key("subdir/foo-bar.ko.zst"), "foo_bar")
+        self.assertEqual(kmi_guard.module_key("foo-bar.ko.xz"), "foo_bar")
+        self.assertEqual(kmi_guard.module_key("foo-bar.ko.gz"), "foo_bar")
+        self.assertEqual(kmi_guard.module_key("foo-bar.ko"), "foo_bar")
+        load = self.path / "modules.load"
+        load.write_text("# boot modules\nfoo-bar.ko\n")
+        self.assertEqual(kmi_guard.module_names([load]), {"foo_bar"})
+
+    def test_capture_compressed_module_with_multiple_roots(self):
+        from unittest.mock import patch
+        import hashlib
+        one = self.path / "vendor"
+        two = self.path / "odm"
+        one.mkdir()
+        two.mkdir()
+        (one / "my-device.ko.zst").write_bytes(b"compressed")
+        (two / "test2.ko.xz").write_bytes(b"compressed2")
+        load = self.path / "modules.load"
+        load.write_text("my-device.ko\n")
+        def fake_command(cmd):
+            if "--show-modversions" in cmd:
+                return "0x12345678\tmodule_layout\n", ""
+            return "6.6.144 SMP modversions\n", ""
+        with patch.object(kmi_guard, "command", side_effect=fake_command):
+            rc = kmi_guard.main([
+                "capture", "--modules-root", str(one),
+                "--modules-root", str(two),
+                "--modules-load", str(load),
+                "--fingerprint", "verified-build",
+                "--output", str(self.path / "captured.json"),
+            ])
+        self.assertEqual(rc, 0)
+        rows = json.loads((self.path / "captured.json").read_text())["modules"]
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(rows[0]["boot_requested"])
+        self.assertFalse(rows[1]["boot_requested"])
+        self.assertEqual(rows[0]["module_sha256"], hashlib.sha256(b"compressed").hexdigest())
+
     def test_layout_difference_is_risk_not_proven_rejection(self):
         (self.path / "before").write_text("old\n")
         (self.path / "after").write_text("new\n")
