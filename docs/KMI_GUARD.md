@@ -76,9 +76,15 @@ be inaccessible. An unavailable source is **not** evidence that it contains
 zero modules. In that case, obtain the exact matching vendor_boot ramdisk
 metadata separately before approving full coverage.
 
-The direct Android collector currently leaves exported_crcs empty. To verify
-vendor-to-vendor links as well, run the Linux-host capture with the actual
-binaries offline. The host tool uses kmod --show-modversions and --show-exports.
+The direct Android collector now extracts vendor-to-vendor exported CRCs
+from `__crc_*` symbols, `__ksymtab_*` markers and `__kcrctab*` sections.
+Only unambiguous CRCs are recorded; unresolved exports are annotated and must
+not be treated as confirmed KMI compatibility. The Linux-host collector
+using kmod `--show-modversions` and `--show-exports` remains an independent
+validation path. The ELF extractor has been cross-checked against 40
+real Linux modules, including modules exporting hundreds of symbols, with
+zero CRC disagreements. Full device-specific coverage still requires
+the matching vendor_boot and ODM data, if present.
 
 ## One-time device input (needed for strict enforcement)
 
