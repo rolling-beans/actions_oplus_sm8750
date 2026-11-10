@@ -26,6 +26,17 @@ DEFAULT_SOURCES = {
     "odm": "/odm/lib/modules",
     "vendor_boot": "/lib/modules",
 }
+# Module load policies may live in etc/ instead of lib/modules/.
+# Limit discovery to known system paths, rather than scanning the filesystem.
+LOAD_LIST_DIRS = {
+    "vendor": ("/vendor/lib/modules", "/vendor/etc",
+               "/vendor_dlkm/lib/modules", "/vendor_dlkm/etc"),
+    "odm": ("/odm/lib/modules", "/odm/etc",
+            "/odm_dlkm/lib/modules", "/odm_dlkm/etc"),
+    "vendor_boot": ("/lib/modules",),
+    "system": ("/system/lib/modules", "/system_dlkm/lib/modules",
+               "/system_dlkm/etc"),
+}
 
 
 def module_key(path):
@@ -39,7 +50,8 @@ def module_key(path):
 
 def prop(name):
     try:
-        out = subprocess.run(["getprop", name], text=True,
+        executable = "/system/bin/getprop" if Path("/system/bin/getprop").is_file() else "getprop"
+        out = subprocess.run([executable, name], text=True,
                              capture_output=True, timeout=8, check=False)
         return out.stdout.strip() if out.returncode == 0 else ""
     except (OSError, subprocess.TimeoutExpired):
@@ -142,36 +154,52 @@ def parse_module(path):
     return required, vermagic
 
 
+
+def read_proc_release():
+    try:
+        return Path("/proc/sys/kernel/osrelease").read_text(errors="replace").strip()
+    except OSError:
+        return "UNAVAILABLE"
+
+
 def collect(args):
     sources = []
     modules = []
     load_lists = []
     all_boot_names = set()
     present = []
+    seen_lists = set()
     for label, source in args.root:
         root = Path(source).resolve()
         if not root.is_dir():
             sources.append({"label": label, "module_count": 0, "available": False})
-            continue
-        present.append((label, root))
-        for load in sorted(root.glob("modules.load*")):
-            if not load.is_file() or load.is_symlink():
+        else:
+            present.append((label, root))
+        for folder in [root, *(Path(p) for p in LOAD_LIST_DIRS.get(label, ()))]:
+            if not folder.is_dir():
                 continue
-            try:
-                content = load.read_text(errors="replace")
-            except OSError as exc:
-                load_lists.append({"source": label, "file": load.name,
-                                   "read_error": str(exc)})
-                continue
-            entries = [line.split("#", 1)[0].strip().split()[0]
-                       for line in content.splitlines()
-                       if line.split("#", 1)[0].strip()]
-            all_boot_names.update(module_key(x) for x in entries)
-            load_lists.append({
-                "source": label, "file": load.name,
-                "sha256": hashlib.sha256(content.encode()).hexdigest(),
-                "entries": entries,
-            })
+            for load in sorted(folder.glob("modules.load*")):
+                if load.is_symlink() or not load.is_file():
+                    continue
+                canonical = str(load.resolve())
+                if canonical in seen_lists:
+                    continue
+                seen_lists.add(canonical)
+                try:
+                    content = load.read_text(errors="replace")
+                except OSError as exc:
+                    load_lists.append({"source": label, "file": str(load),
+                                       "read_error": str(exc)})
+                    continue
+                entries = [line.split("#", 1)[0].strip().split()[0]
+                           for line in content.splitlines()
+                           if line.split("#", 1)[0].strip()]
+                all_boot_names.update(module_key(x) for x in entries)
+                load_lists.append({
+                    "source": label, "file": str(load),
+                    "sha256": hashlib.sha256(content.encode()).hexdigest(),
+                    "entries": entries,
+                })
     for label, root in present:
         count = 0
         for base, _, files in os.walk(root, followlinks=False):
@@ -210,6 +238,8 @@ def collect(args):
         "device_build_fingerprint": prop("ro.build.fingerprint") or "UNVERIFIED",
         "vendor_build_fingerprint": prop("ro.vendor.build.fingerprint"),
         "kernel_release": platform.uname().release,
+        "kernel_release_uname": os.uname().release,
+        "kernel_release_proc": read_proc_release(),
         "sources": sources,
         "load_lists": load_lists,
         "modules": modules,
