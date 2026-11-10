@@ -89,11 +89,15 @@ def elf_sections(data):
     sections = []
     for i in range(count):
         base = offset + i * entsize
-        nameid, _, _, _, pos, size, _, _, _, stride = struct.unpack_from(
+        nameid, section_type, _, _, pos, size, _, _, _, stride = struct.unpack_from(
             "<IIQQQQIIQQ", data, base)
-        if pos > len(data) or size > len(data) - pos:
-            raise ValueError("ELF section data extends beyond file")
-        sections.append((nameid, data[pos:pos + size], stride))
+        if section_type == 8:  # SHT_NOBITS: .bss-style, no file-backed bytes.
+            blob = b""
+        else:
+            if pos > len(data) or size > len(data) - pos:
+                raise ValueError("ELF section data extends beyond file")
+            blob = data[pos:pos + size]
+        sections.append((nameid, blob, stride))
     names = sections[names_idx][1]
 
     def name_at(index):
