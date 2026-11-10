@@ -59,6 +59,42 @@ class AndroidKmiCollectorTests(unittest.TestCase):
         self.assertEqual(sections[".shstrtab"][0], strings)
         self.assertEqual(sections[".bss"][0], b"")
 
+    def test_export_crc_from_symbols_and_kcrctab(self):
+        # Tiny synthetic relocatable ELF with a GPL export and matching
+        # __crc_test_func symbol pointing into __kcrctab_gpl.
+        names = b"\x00.shstrtab\x00.strtab\x00.symtab\x00__kcrctab_gpl\x00__ksymtab_gpl\x00"
+        sym_names = b"\x00__ksymtab_test_func\x00__crc_test_func\x00"
+        crc = struct.pack("<I", 0x12345678)
+        symzero = bytes(24)
+        def sym_entry(name, section, value):
+            return struct.pack("<IBBHQQ", sym_names.index(name), 0, 0,
+                               section, value, 0)
+        syms = (symzero + sym_entry(b"__ksymtab_test_func", 5, 0) +
+                sym_entry(b"__crc_test_func", 4, 0))
+        section_blobs = [b"", names, sym_names, syms, crc, bytes(12)]
+        offset = 64 + 6 * 64
+        descriptors = []
+        payload = b""
+        section_names = ["", ".shstrtab", ".strtab", ".symtab",
+                         "__kcrctab_gpl", "__ksymtab_gpl"]
+        for i, (name, blob) in enumerate(zip(section_names, section_blobs)):
+            header_type = 0 if i == 0 else 2 if i == 3 else 3 if i in (1, 2) else 1
+            descriptors.append(struct.pack(
+                "<IIQQQQIIQQ", names.index(name.encode()) if name else 0,
+                header_type, 0, 0, offset, len(blob),
+                2 if i == 3 else 0, 0, 8, 24 if i == 3 else 0
+            ))
+            payload += blob
+            offset += len(blob)
+        header = bytearray(64)
+        header[:6] = b"\x7fELF\x02\x01"
+        struct.pack_into("<Q", header, 40, 64)
+        struct.pack_into("<HHH", header, 58, 64, 6, 1)
+        elf = bytes(header) + b"".join(descriptors) + payload
+        exports, note = collect.elf_exported_crcs(elf)
+        self.assertEqual(exports, {"test_func": "0x12345678"})
+        self.assertEqual(note, "")
+
     def test_unknown_versions_fail_closed(self):
         with patch.object(collect, "get_elf_bytes", return_value=b"ELF"), \
              patch.object(collect, "elf_sections", return_value={".modinfo": (b"", 0)}):
