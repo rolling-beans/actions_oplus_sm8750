@@ -291,6 +291,13 @@ def audit(args):
             })
     elif args.baseline_layouts or args.candidate_layouts:
         report["unverified"].append("layout comparison lacks approved baseline/candidate")
+    report["boot_impact"] = {
+        "reviewed_critical_module_rejections": sum(
+            bool(x["boot_critical_reviewed"]) for x in report["definite_module_rejections"]),
+        "startup_list_module_rejections": sum(
+            bool(x["boot_requested"]) for x in report["definite_module_rejections"]),
+        "guaranteed_android_boot_failure": False,
+    }
     if report["definite_module_rejections"]:
         report["status"] = "MODULE_LOAD_REJECTION"
     elif not report["unverified"]:
@@ -308,6 +315,11 @@ def audit(args):
         "- Imports compared against vmlinux: " + str(report["checked_import_count"]),
         "- Imports compared against unique vendor providers: " + str(report["checked_vendor_provider_imports"]),
         "- Certain module-load rejections: " + str(len(report["definite_module_rejections"])),
+        "- Rejections of reviewed boot-critical modules: " +
+        str(report["boot_impact"]["reviewed_critical_module_rejections"]),
+        "- Rejections in startup module lists: " +
+        str(report["boot_impact"]["startup_list_module_rejections"]),
+        "- Guaranteed Android boot failure: **NOT ESTABLISHED**",
         "- Potential risk findings: " + str(len(report["potential_risks"])),
         "- Unverified entries: " + str(len(report["unverified"])), "",
     ]
