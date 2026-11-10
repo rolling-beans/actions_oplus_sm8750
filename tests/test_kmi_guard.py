@@ -108,6 +108,18 @@ class KmiGuardTests(unittest.TestCase):
         self.assertEqual(rc, 3)
         self.assertIsNone(r["definite_module_rejections"][0]["kernel_crc"])
 
+    def test_unresolved_export_crc_cannot_pass_enforce(self):
+        manifest = self.manifest()
+        data = json.loads(manifest.read_text())
+        data["modules"][0]["export_capture_note"] = (
+            "CRC unverified for 2 ELF exports")
+        manifest.write_text(json.dumps(data))
+        rc, report = self.run_audit(manifest, "enforce")
+        self.assertEqual(rc, 3)
+        self.assertEqual(report["status"], "UNVERIFIED")
+        self.assertTrue(any("export CRCs not fully verified" in s
+                            for s in report["unverified"]))
+
     def test_partial_module_capture_cannot_pass_enforce(self):
         rc, r = self.run_audit(self.manifest(error="missing modversion section"), "enforce")
         self.assertEqual(rc, 3)
