@@ -41,6 +41,24 @@ class AndroidKmiCollectorTests(unittest.TestCase):
         self.assertEqual(crcs["schedule"], "0xabcdef01")
         self.assertEqual(len(crcs), 2)
 
+    def test_nobits_section_has_no_file_bytes(self):
+        # ELF64 with a .bss section whose memory size exceeds file length.
+        # SHT_NOBITS carries no actual payload and must not be rejected.
+        strings = b"\\x00.shstrtab\\x00.bss\\x00"
+        hdr = bytearray(64)
+        hdr[:6] = b"\\x7fELF\\x02\\x01"
+        struct.pack_into("<Q", hdr, 40, 64)
+        struct.pack_into("<HHH", hdr, 58, 64, 3, 1)
+        def section(name_id, typ, offset, size):
+            return struct.pack("<IIQQQQIIQQ", name_id, typ, 0, 0,
+                               offset, size, 0, 0, 1, 0)
+        blob = (bytes(hdr) + bytes(64) +
+                section(1, 3, 64 + 64 * 3, len(strings)) +
+                section(11, 8, 1_000_000, 1_000_000) + strings)
+        sections = collect.elf_sections(blob)
+        self.assertEqual(sections[".shstrtab"][0], strings)
+        self.assertEqual(sections[".bss"][0], b"")
+
     def test_unknown_versions_fail_closed(self):
         with patch.object(collect, "get_elf_bytes", return_value=b"ELF"), \
              patch.object(collect, "elf_sections", return_value={".modinfo": (b"", 0)}):
