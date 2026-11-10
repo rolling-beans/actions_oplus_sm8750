@@ -111,8 +111,86 @@ def elf_sections(data):
     return {name_at(i): (blob, stride) for i, blob, stride in sections}
 
 
-def parse_module(path):
-    data = elf_sections(get_elf_bytes(path))
+
+def elf_exported_crcs(raw):
+    """Conservative ELF64 export versions via __ksymtab_* and __crc_* symbols.
+
+    CRC symbols normally point inside __kcrctab* sections. We do not infer
+    provider values when symbols, sections or CRC offsets are ambiguous.
+    """
+    shoff = struct.unpack_from("<Q", raw, 40)[0]
+    step, count, names_idx = struct.unpack_from("<HHH", raw, 58)
+    if step < 64 or not count or names_idx >= count:
+        raise ValueError("invalid ELF export section table")
+    if shoff > len(raw) or count > (len(raw) - shoff) // step:
+        raise ValueError("ELF export section table out of bounds")
+    headers = [struct.unpack_from("<IIQQQQIIQQ", raw, shoff + i * step)
+               for i in range(count)]
+
+    def payload(section_index):
+        if not 0 <= section_index < len(headers):
+            raise ValueError("invalid ELF export section index")
+        header = headers[section_index]
+        offset, size = header[4], header[5]
+        if header[1] == 8:  # SHT_NOBITS
+            return b""
+        if offset > len(raw) or size > len(raw) - offset:
+            raise ValueError("ELF export section data out of bounds")
+        return raw[offset:offset + size]
+
+    def name_at(table, offset):
+        if not 0 <= offset < len(table):
+            return ""
+        end = table.find(b"\0", offset)
+        if end < 0:
+            return ""
+        return table[offset:end].decode("ascii", "replace")
+
+    names = payload(names_idx)
+    exported_names = set()
+    crc_values = {}
+    for i, header in enumerate(headers):
+        if header[1] != 2:  # SHT_SYMTAB
+            continue
+        symtab = payload(i)
+        strings = payload(header[6])  # sh_link points to SHT_STRTAB.
+        stride = header[9] or 24
+        if stride < 24 or len(symtab) % stride:
+            raise ValueError("unsupported ELF symbol table entry size")
+        for offset in range(0, len(symtab), stride):
+            name_id, _, _, section_id, value, _ = struct.unpack_from(
+                "<IBBHQQ", symtab, offset)
+            name = name_at(strings, name_id)
+            if name.startswith("__ksymtab_"):
+                exported_names.add(name[len("__ksymtab_"):])
+            if not name.startswith("__crc_"):
+                continue
+            symbol = name[len("__crc_"):]
+            if section_id == 0xfff1:  # SHN_ABS
+                crc = value & 0xffffffff
+            elif (section_id < len(headers) and
+                  name_at(names, headers[section_id][0]).startswith("__kcrctab")):
+                section = payload(section_id)
+                if value + 4 > len(section):
+                    continue
+                crc = struct.unpack_from("<I", section, value)[0]
+            else:
+                continue
+            crc_values.setdefault(symbol, set()).add(crc)
+    supplied = {}
+    for name in exported_names:
+        crc_set = crc_values.get(name, set())
+        if len(crc_set) == 1:
+            supplied[name] = f"0x{next(iter(crc_set)):08x}"
+    unverified = len(exported_names - set(supplied))
+    note = (f"CRC unverified for {unverified} ELF export(s)"
+            if unverified else "")
+    return dict(sorted(supplied.items())), note
+
+
+def parse_module(path, include_exports=False):
+    raw = get_elf_bytes(path)
+    data = elf_sections(raw)
     modinfo = data.get(".modinfo", (b"", 0))[0]
     vermagic = ""
     for record in modinfo.split(b"\0"):
@@ -155,6 +233,9 @@ def parse_module(path):
         raise ValueError("no MODVERSIONS section in module")
     if not required:
         raise ValueError("empty MODVERSIONS section")
+    if include_exports:
+        exports, note = elf_exported_crcs(raw)
+        return required, vermagic, exports, note
     return required, vermagic
 
 
@@ -214,9 +295,10 @@ def collect(args):
                 if path.is_symlink():
                     continue
                 count += 1
-                error, required, magic = "", {}, ""
+                error, required, magic, exports, export_note = "", {}, "", {}, ""
                 try:
-                    required, magic = parse_module(path)
+                    required, magic, exports, export_note = parse_module(
+                        path, include_exports=True)
                 except (OSError, ValueError, lzma.LZMAError,
                         gzip.BadGzipFile, subprocess.TimeoutExpired) as exc:
                     error = str(exc)
@@ -232,7 +314,8 @@ def collect(args):
                     "boot_critical_reviewed": False,
                     "vermagic": magic,
                     "required_crcs": dict(sorted(required.items())),
-                    "exported_crcs": {},  # Verified on a Linux host separately.
+                    "exported_crcs": exports,
+                    "export_capture_note": export_note,
                     "capture_error": error,
                 })
         sources.append({"label": label, "module_count": count, "available": True})
