@@ -1,4 +1,5 @@
 """Synthetic KMI Guard tests; no device or proprietary modules required."""
+import hashlib
 import json
 import tempfile
 import unittest
@@ -26,6 +27,7 @@ class KmiGuardTests(unittest.TestCase):
         obj = {
             "schema_version": 1,
             "device_build_fingerprint": fingerprint,
+            "sources": [{"label": "vendor_dlkm", "module_count": 1}],
             "modules": [{
                 "path": "vendor_dlkm/test.ko",
                 "boot_requested": True,
@@ -40,7 +42,7 @@ class KmiGuardTests(unittest.TestCase):
         return self.path / "vendor.json"
 
     def run_audit(self, manifest=None, mode="audit", baseline=None,
-                  before=None, after=None):
+                  before=None, after=None, approve=True):
         argv = [
             "audit", "--symvers", str(self.path / "symvers"),
             "--config", str(self.path / "config"),
@@ -49,6 +51,17 @@ class KmiGuardTests(unittest.TestCase):
         ]
         if manifest:
             argv += ["--vendor-manifest", str(manifest)]
+            if approve:
+                data = json.loads(manifest.read_text())
+                approval = {
+                    "schema_version": 1,
+                    "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                    "device_build_fingerprint": data["device_build_fingerprint"],
+                    "verified_sources": [s["label"] for s in data["sources"]],
+                    "startup_load_lists_verified": True,
+                }
+                (self.path / "approval.json").write_text(json.dumps(approval))
+                argv += ["--approved-manifest", str(self.path / "approval.json")]
         if baseline:
             argv += ["--baseline-symvers", str(baseline)]
         if before:
@@ -99,6 +112,12 @@ class KmiGuardTests(unittest.TestCase):
         rc, r = self.run_audit(self.manifest(error="missing modversion section"), "enforce")
         self.assertEqual(rc, 3)
         self.assertEqual(r["status"], "UNVERIFIED")
+
+    def test_incomplete_vendor_manifest_requires_review(self):
+        rc, r = self.run_audit(self.manifest(), "enforce", approve=False)
+        self.assertEqual(rc, 3)
+        self.assertEqual(r["status"], "UNVERIFIED")
+        self.assertTrue(any("not approved" in s for s in r["unverified"]))
 
     def test_missing_fingerprint_cannot_pass_enforce(self):
         rc, r = self.run_audit(self.manifest(fingerprint="UNVERIFIED"), "enforce")
