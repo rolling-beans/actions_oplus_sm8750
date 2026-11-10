@@ -53,10 +53,10 @@ class AndroidKmiCollectorTests(unittest.TestCase):
         (root / "foo-bar.ko").write_bytes(b"not-an-elf")
         policy = self.root / "vendor_dlkm" / "etc"
         policy.mkdir(parents=True)
-        (policy / "modules.load").write_text("foo-bar.ko\\n")
+        (policy / "modules.load").write_text("foo-bar.ko\n")
         args = type("Arg", (), {"root": [("vendor", str(root))],
                                 "output": str(self.root / "capture.json")})()
-        with patch.dict(collect.LOAD_LIST_DIRS, {"vendor": (str(policy),)}), \\
+        with patch.dict(collect.LOAD_LIST_DIRS, {"vendor": (str(policy),)}), \
              patch.object(collect, "prop", return_value="test-fingerprint"):
             rc = collect.collect(args)
         manifest = json.loads((self.root / "capture.json").read_text())
