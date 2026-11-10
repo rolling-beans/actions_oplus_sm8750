@@ -1292,12 +1292,13 @@ jobs:
           LAYOUTS="$EVIDENCE/type-layouts.txt"
           VMLINUX="$GITHUB_WORKSPACE/kout/vmlinux"
           if [ -s "$VMLINUX" ]; then
-            for type in task_struct cgroup cfs_rq rq task_group; do
-              printf '=== %s ===\n' "$type" >> "$LAYOUTS"
-              if ! pahole -C "$type" "$VMLINUX" >> "$LAYOUTS" 2>/dev/null; then
-                echo "UNAVAILABLE (not evidence of compatibility)" >> "$LAYOUTS"
-              fi
-            done
+            # Use embedded BTF rather than repeatedly parsing the full DWARF tree.
+            # Diagnostic only: timeouts must not block CRC module-load checks.
+            if ! timeout 45s pahole -F btf \
+                -C 'task_struct,cgroup,cfs_rq,rq,task_group' "$VMLINUX" \
+                > "$LAYOUTS" 2>"$EVIDENCE/pahole.stderr"; then
+              echo "BTF type layout snapshot UNAVAILABLE (not a KMI pass)" > "$LAYOUTS"
+            fi
           else
             echo "vmlinux missing: type layout analysis UNAVAILABLE" > "$LAYOUTS"
           fi
