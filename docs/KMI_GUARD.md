@@ -34,7 +34,32 @@ file with Termux Python 3:
       --output /sdcard/Download/op13-kmi-vendor-manifest.json
 
 The script scans /vendor/lib/modules, /odm/lib/modules and /lib/modules where
-accessible, and reads available modules.load* files. It records per-.ko SHA-256,
+accessible, and checks modules.load* both alongside modules and in the
+known /vendor/etc, /vendor_dlkm/etc, /odm/etc and /odm_dlkm/etc locations.
+
+### Device diagnostic when all modules return Permission denied
+
+AOSP may expose .ko filenames to an unprivileged process while denying
+read access to their bytes. A manifest containing 498 modules with EACCES
+is a discovery-only artifact, not useful ABI evidence.
+
+Check access with a read-only four-byte ELF probe first:
+
+    sudo sh -c 'id; dd if=/vendor/lib/modules/adsp_loader_dlkm.ko bs=4 count=1 status=none | od -An -tx1'
+
+Expected bytes for ELF are `7f 45 4c 46`. Only when the probe succeeds,
+run the local collector using the Termux Python interpreter with root.
+Write the output into Termux private temporary storage, change its ownership,
+then copy metadata to Download from the normal Termux context. The collector
+will not change SELinux, mount partitions or copy module binaries.
+If the root probe is denied, stop and diagnose SELinux/root context; do
+not turn off SELinux to circumvent an unknown policy.
+
+Both raw `uname -r` and `/proc/sys/kernel/osrelease` are captured when
+available because root managers and system property overrides can return
+inconsistent kernel-release strings. The vendor firmware build fingerprint
+may be different from the Android ROM version.
+ It records per-.ko SHA-256,
 required MODVERSIONS CRCs, vermagic, build fingerprint and inventory. It **never
 includes .ko bytes**. It does not install tools or request root by itself.
 For .ko.zst, the optional zstd CLI is required; otherwise those modules stay
