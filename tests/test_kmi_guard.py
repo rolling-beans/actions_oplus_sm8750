@@ -186,6 +186,17 @@ class KmiGuardTests(unittest.TestCase):
         self.assertFalse(rows[1]["boot_requested"])
         self.assertEqual(rows[0]["module_sha256"], hashlib.sha256(b"compressed").hexdigest())
 
+    def test_reviewed_early_boot_rejection_is_prioritized_not_guaranteed_bootloop(self):
+        manifest = self.manifest(crc="0xabcdef02")
+        payload = json.loads(manifest.read_text())
+        payload["modules"][0]["boot_critical_reviewed"] = True
+        manifest.write_text(json.dumps(payload))
+        rc, report = self.run_audit(manifest, mode="enforce")
+        self.assertEqual(rc, 3)
+        self.assertEqual(report["boot_impact"]["reviewed_critical_module_rejections"], 1)
+        self.assertEqual(report["boot_impact"]["startup_list_module_rejections"], 1)
+        self.assertFalse(report["boot_impact"]["guaranteed_android_boot_failure"])
+
     def test_vendor_to_vendor_version_match(self):
         manifest = self.manifest(imports={"vendor_func": "0xaabbccdd"})
         payload = json.loads(manifest.read_text())
