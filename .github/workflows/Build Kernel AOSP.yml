@@ -16,6 +16,7 @@ on:
   push:
     branches:
       - master
+      - 'feat/kmi-guard-*'
   pull_request:
   workflow_dispatch:
     inputs:
@@ -170,7 +171,7 @@ on:
       
 jobs:
   kmi-guard-tests:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref != 'refs/heads/master')
     runs-on: ubuntu-latest
     permissions:
       contents: read
