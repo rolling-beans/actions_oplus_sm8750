@@ -185,9 +185,15 @@ bitfield widths and type names. It records a SHA-256 of the raw input but
 
 From a cloned repository in Termux, run:
 
-    bash scripts/kmi_capture_btf_termux.sh
+    bash scripts/kmi_next_stage_termux.sh
 
-The wrapper creates `/sdcard/Documents/KMI-Guard/live-kernel-btf-*.json`
+This orchestrates the live BTF snapshot and a **targeted** scan of
+`/system/lib/modules` (or `/system_dlkm/lib/modules`) without re-reading
+the 498 vendor modules. It reports unavailable roots without treating them
+as proof that the corresponding partition contains no modules. To collect
+BTF alone, run `bash scripts/kmi_capture_btf_termux.sh`.
+
+The BTF wrapper creates `/sdcard/Documents/KMI-Guard/live-kernel-btf-*.json`
 with the regular Termux user's storage permission. It only uses `sudo`
 when reading the sysfs BTF requires it; a root process never writes
 the output file. No SELinux changes or kernel/device writes are made.
