@@ -1,6 +1,7 @@
 """Read-only Android ELF collector tests; no rooted device required."""
 import json
 import struct
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -118,6 +119,11 @@ class AndroidKmiCollectorTests(unittest.TestCase):
         self.assertEqual(len(manifest["load_lists"]), 1)
         self.assertEqual(manifest["load_lists"][0]["entries"], ["foo-bar.ko"])
         self.assertTrue(manifest["modules"][0]["boot_requested"])
+
+    def test_termux_wrapper_shell_syntax(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "kmi_capture_termux.sh"
+        proc = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_default_output_is_saf_accessible_documents(self):
         with patch.object(collect, "collect", return_value=0) as action:
