@@ -127,6 +127,49 @@ in the device post-boot namespace, so neither complete compatibility
 nor guaranteed Android bootability can be claimed. CRC equality
 does not replace Android STG/DWARF ABI type comparison.
 
+## Provisional BTF structure comparison (not boot verified)
+
+The workflow stores `type-layouts.txt` from `pahole -F btf` and now
+runs `scripts/kmi_layout_diff.py` against the checked-in
+`kmi/provisional-reference-type-layouts-42877326850.txt`.
+
+- Reference: GitHub Actions kernel build #233 / 42877326850.
+- SHA-256: `8396b94724d7cbd20abc7f7ab0dbb1387119fa345b0f4159967e2f188e59b778`.
+- Types: `task_struct`, `cgroup`, `cfs_rq`, `rq`, `task_group`.
+- It records `layout-diff.json` and `layout-diff.md` in the
+  `kmi-guard-RUN_ID` artifact.
+- Findings: `NO_DIFFERENCE`, `TYPE_LAYOUT_CHANGED` or `UNVERIFIED`.
+  Layout changes are **advisory only**; they are not promoted to proof
+  of a module-load rejection, and certainly not guaranteed boot failure.
+- A **synthetic** test changed `struct cgroup` from 1920 to 1928
+  bytes; it was correctly flagged. Tests against the same baseline
+  return `NO_DIFFERENCE`.
+- This reference is **not confirmed booted** on the device, even though
+  it came from a successful kernel build. It must not be labeled
+  an approved GKI KMI baseline. A future boot-verified reference
+  plus the official `stg`/`stgdiff` graph comparison are still needed.
+
+### GitHub Actions availability (verified 12 November 2026)
+
+Although the repository setting reports `enabled=true`,
+`allowed_actions=all`, and the build workflow is `active`,
+attempted manual dispatch returned HTTP 422:
+"Actions has been disabled for this repository." The latest
+pushes on this branch do not create new runs. Thus the **current
+HEAD has not passed an Actions build**; the last fully successful
+kernel smoke run #233 predates these additions.
+
+The official GitHub documentation says this combination can be
+a GitHub-controlled disabled state that ordinary settings cannot
+resolve:
+https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository
+
+Do not toggle permissions blindly or treat local unit tests as
+equivalent to a complete kernel build. A review by GitHub Support
+may be necessary. Local checks of the latest HEAD completed:
+35 unit tests PASS, Bash syntax PASS, baseline self-compare PASS,
+and synthetic cgroup drift detection PASS.
+
 ## One-time device input (needed for strict enforcement)
 
 The GitHub repository intentionally does not include vendor modules. Collect the .ko files from the **exact active system firmware** (vendor_dlkm/odm_dlkm and any separately supplied vendor modules) without editing or flashing the device, and copy them to a trusted Linux environment. Preserve module paths and firmware/build fingerprint. If the module list has not been collected yet, **stay in audit mode**.
