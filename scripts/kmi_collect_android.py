@@ -7,6 +7,7 @@ Supports ELF64 little endian (arm64), basic and extended MODVERSIONS.
 For .ko.zst files, the 'zstd' executable must be available.
 """
 import argparse
+from datetime import datetime
 import gzip
 import hashlib
 import json
@@ -347,7 +348,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", action="append", metavar="LABEL=PATH",
                         help="explicit module source; repeat as needed")
-    parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--output",
+        default="/sdcard/Documents/KMI-Guard/android-kmi-vendor-" +
+                datetime.now().strftime("%Y%m%d-%H%M%S") + ".json",
+        help="output JSON; defaults to SAF-accessible /sdcard/Documents/KMI-Guard/")
     args = parser.parse_args(argv)
     selected_roots = args.root or [f"{label}={path}" for label, path in DEFAULT_SOURCES.items()]
     args.root = []
