@@ -57,7 +57,7 @@ class BTFSnapshotTests(unittest.TestCase):
 
     def test_unsupported_kind_does_not_pass(self):
         data = bytearray(simple_btf())
-        struct.pack_into("<I", data, 24 + 12 + 4, 31 << 24)
+        struct.pack_into("<I", data, 24 + 16 + 4, 31 << 24)
         with self.assertRaises(snap.BTFError):
             snap.BTF(bytes(data))
 
@@ -72,13 +72,15 @@ class BTFSnapshotTests(unittest.TestCase):
 
     def test_bitfield_offset(self):
         data = bytearray(simple_btf())
-        # struct type 2 follows an int type record (12 + 4 bytes).
+        # Struct type 2 follows a 16-byte INT record.
+        struct_info_at = 24 + 16 + 4
+        struct.pack_into("<I", data, struct_info_at, (1 << 31) | (4 << 24) | 1)
         member_at = 24 + 16 + 12 + 8
         struct.pack_into("<I", data, member_at, (3 << 24) | 19)
-        tree, warnings = snap.BTF(bytes(data[:24+len(data)-24])).snapshot()
-        # kind_flag must also be set on that struct, otherwise the high
-        # 8 bits form part of the offset; test deliberately avoids guessing.
-        self.assertGreater(tree["task_struct"]["fields"][0]["bit_offset"], 19)
+        tree, warnings = snap.BTF(bytes(data)).snapshot()
+        self.assertEqual(warnings, [])
+        self.assertEqual(tree["task_struct"]["fields"][0]["bit_offset"], 19)
+        self.assertEqual(tree["task_struct"]["fields"][0]["bitfield_size"], 3)
 
 
 if __name__ == "__main__":
