@@ -170,6 +170,59 @@ may be necessary. Local checks of the latest HEAD completed:
 35 unit tests PASS, Bash syntax PASS, baseline self-compare PASS,
 and synthetic cgroup drift detection PASS.
 
+## Running-device BTF snapshot (boot-verified reference candidate)
+
+The previous reference from Actions #233 was **build-verified, not boot-verified**.
+A running kernel may expose its actual BTF as the read-only sysfs file
+\`/sys/kernel/btf/vmlinux\`. This enables an independent comparison against
+the kernel build's candidate \`type-layouts.txt\` **without flashing anything**.
+
+The standard-library collector \`scripts/kmi_btf_snapshot.py\` extracts only
+five named structures (\`task_struct\`, \`cgroup\`, \`cfs_rq\`, \`rq\`,
+\`task_group\`), each structure's size and its named member offsets,
+bitfield widths and type names. It records a SHA-256 of the raw input but
+**does not store or transmit the raw BTF binary**.
+
+From a cloned repository in Termux, run:
+
+    bash scripts/kmi_capture_btf_termux.sh
+
+The wrapper creates \`/sdcard/Documents/KMI-Guard/live-kernel-btf-*.json\`
+with the regular Termux user's storage permission. It only uses \`sudo\`
+when reading the sysfs BTF requires it; a root process never writes
+the output file. No SELinux changes or kernel/device writes are made.
+
+A complete snapshot captured from the running device has the
+\`capture_kind=booted-kernel-btf-sysfs\` marker and can be reviewed as a
+candidate boot-verified baseline. Review the device kernel release and
+vendor firmware fingerprint independently before blessing it as the
+reference for the appropriate firmware/build.
+
+A local comparison can then be run (Linux/Python 3):
+
+    python3 scripts/kmi_compare_live_btf.py \
+      --live-json /path/to/approved-live-kernel-btf.json \
+      --candidate-layouts /path/to/kmi-guard/type-layouts.txt \
+      --report-json /tmp/live-btf-diff.json \
+      --report-md /tmp/live-btf-diff.md
+
+The comparison reports outer structure size changes, changed bit offsets
+of the same named top-level fields, and incomplete field coverage.
+It **does not** establish whether a vendor module accesses those fields,
+nor check all nested types and function ABI. Changes are advisory risks.
+A candidate that matches these five structures has not passed full KMI.
+
+The workflow automatically runs this comparison if a reviewed
+\`kmi/booted-kernel-btf.json\` is present. When absent,
+\`live-btf-diff.json\` is explicitly \`UNVERIFIED\`; it never silently
+treats the provisional Actions baseline as boot-verified.
+No live BTF reference is committed yet, pending manual review.
+
+For a full structural ABI graph, Android's official
+\`stg\`/\`stgdiff\` analysis using reproducible vmlinux + DWARF and a
+reference \`.stg\` is still necessary:
+https://source.android.com/docs/core/architecture/kernel/abi-monitor
+
 ## One-time device input (needed for strict enforcement)
 
 The GitHub repository intentionally does not include vendor modules. Collect the .ko files from the **exact active system firmware** (vendor_dlkm/odm_dlkm and any separately supplied vendor modules) without editing or flashing the device, and copy them to a trusted Linux environment. Preserve module paths and firmware/build fingerprint. If the module list has not been collected yet, **stay in audit mode**.
