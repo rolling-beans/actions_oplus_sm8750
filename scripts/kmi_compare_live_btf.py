@@ -13,7 +13,10 @@ from pathlib import Path
 import re
 import sys
 
-from scripts import kmi_layout_diff
+if __package__:
+    from . import kmi_layout_diff
+else:
+    import kmi_layout_diff
 
 LOCATION = re.compile(r"/\*\s*(\d+)(?:\s*:\s*(\d+))?\s+(\d+)\s*\*/")
 FIELD = re.compile(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*(?::\s*(\d+))?\s*$")
