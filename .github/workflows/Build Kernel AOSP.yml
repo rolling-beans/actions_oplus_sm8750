@@ -1303,6 +1303,22 @@ jobs:
             echo "vmlinux missing: type layout analysis UNAVAILABLE" > "$LAYOUTS"
           fi
 
+          # Provisional reference from Actions #233. It has NOT been boot-verified.
+          # This is an advisory type-layout comparison, never a bootability PASS.
+          LAYOUT_REF_PROVISIONAL="$GITHUB_WORKSPACE/kmi-tools/kmi/provisional-reference-type-layouts-42877326850.txt"
+          LAYOUT_GUARD="$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_layout_diff.py"
+          if [ -f "$LAYOUT_REF_PROVISIONAL" ]; then
+            if ! python3 "$LAYOUT_GUARD" \
+                --reference "$LAYOUT_REF_PROVISIONAL" \
+                --candidate "$LAYOUTS" \
+                --report-json "$EVIDENCE/layout-diff.json" \
+                --report-md "$EVIDENCE/layout-diff.md"; then
+              echo "::warning title=KMI type layout unverified::Could not compare structures; check layout-diff artifact"
+            fi
+            cat "$EVIDENCE/layout-diff.md" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=Provisional BTF baseline::Layout comparison uses a NOT BOOT-VERIFIED reference (#233)"
+          fi
+
           GUARD="$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_guard.py"
           args=(audit
             --symvers "$SYMVERS"
