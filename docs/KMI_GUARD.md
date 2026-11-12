@@ -27,44 +27,45 @@ The Python standard-library collector can run **on the device**, avoiding
 transporting proprietary .ko files to a computer. It never calls insmod,
 modprobe, dd, mount, flashing tools, or any network API.
 
-On the phone, after reviewing scripts/kmi_collect_android.py, run the local
-file with Termux Python 3:
+On the phone, after reviewing `scripts/kmi_collect_android.py`, give
+Termux the usual shared-storage access and run:
 
-    python3 scripts/kmi_collect_android.py \
-      --output /sdcard/Download/op13-kmi-vendor-manifest.json
+    sudo "$PREFIX/bin/python3" scripts/kmi_collect_android.py
 
-The script scans /vendor/lib/modules, /odm/lib/modules and /lib/modules where
-accessible, and checks modules.load* both alongside modules and in the
-known /vendor/etc, /vendor_dlkm/etc, /odm/etc and /odm_dlkm/etc locations.
+The default output is timestamped and placed in
+`/sdcard/Documents/KMI-Guard/android-kmi-vendor-YYYYMMDD-HHMMSS.json`.
+This public Documents subfolder is accessible through Android's system
+Storage Access Framework (SAF) picker. **No secondary copy out of
+`$PREFIX/tmp` is required.** An explicit `--output` can override
+the location. A root process creates the output directory if needed;
+the JSON is metadata only, not module binary content.
+
+If the Documents folder is not writable in the current scoped-storage
+configuration, first use the normal Termux account to create/access the
+directory via `termux-setup-storage`. Do not change SELinux or remount
+vendor partitions to repair an output-path permission problem.
+
+The script scans `/vendor/lib/modules`, `/odm/lib/modules` and
+`/lib/modules` where accessible, and checks `modules.load*` both
+alongside modules and in known `/vendor/etc`,
+`/vendor_dlkm/etc`, `/odm/etc` and `/odm_dlkm/etc`
+locations. It records SHA-256, required and exported MODVERSIONS CRCs,
+vermagic, build fingerprints and inventory. It never includes .ko
+binary bytes and does not upload data.
 
 ### Device diagnostic when all modules return Permission denied
 
-AOSP may expose .ko filenames to an unprivileged process while denying
-read access to their bytes. A manifest containing 498 modules with EACCES
-is a discovery-only artifact, not useful ABI evidence.
+AOSP may expose `.ko` filenames to an unprivileged process while
+denying read access to their bytes. An EACCES-only manifest is a
+discovery artifact, not ABI evidence. A read-only 4-byte ELF probe
+under Termux `sudo` verified the OnePlus 13 module read permission
+without changing SELinux or mounts. Do not disable SELinux to
+circumvent a denied read.
 
-Check access with a read-only four-byte ELF probe first:
-
-    sudo sh -c 'id; dd if=/vendor/lib/modules/adsp_loader_dlkm.ko bs=4 count=1 status=none | od -An -tx1'
-
-Expected bytes for ELF are `7f 45 4c 46`. Only when the probe succeeds,
-run the local collector using the Termux Python interpreter with root.
-Write the output into Termux private temporary storage, change its ownership,
-then copy metadata to Download from the normal Termux context. The collector
-will not change SELinux, mount partitions or copy module binaries.
-If the root probe is denied, stop and diagnose SELinux/root context; do
-not turn off SELinux to circumvent an unknown policy.
-
-Both raw `uname -r` and `/proc/sys/kernel/osrelease` are captured when
-available because root managers and system property overrides can return
-inconsistent kernel-release strings. The vendor firmware build fingerprint
-may be different from the Android ROM version.
- It records per-.ko SHA-256,
-required MODVERSIONS CRCs, vermagic, build fingerprint and inventory. It **never
-includes .ko bytes**. It does not install tools or request root by itself.
-For .ko.zst, the optional zstd CLI is required; otherwise those modules stay
-UNVERIFIED. If SELinux denies access, an explicit reviewed invocation via
-Termux's sudo may be appropriate. Do not disable SELinux to collect this data.
+Raw kernel versions from `os.uname().release` and
+`/proc/sys/kernel/osrelease` are stored because
+`platform.uname().release` can be incorrect in Termux (reported
+Android version 17 instead of kernel 6.6.144).
 
 For direct access to additional extracted ramdisk directories use repeated
 --root LABEL=PATH (the explicit roots then replace defaults). This script
@@ -85,6 +86,39 @@ validation path. The ELF extractor has been cross-checked against 40
 real Linux modules, including modules exporting hundreds of symbols, with
 zero CRC disagreements. Full device-specific coverage still requires
 the matching vendor_boot and ODM data, if present.
+
+## Empirical OnePlus 13 ABI evidence (12 Nov 2026)
+
+The complete on-device v2 capture contains **498 decoded .ko files**,
+**5,858 provider CRC entries** and a verified 362-name vendor
+`modules.load` inventory. The private manifest itself is not committed.
+
+Comparing against `vmlinux.symvers` from the successful GitHub Actions
+run **#233 / 42877326850**:
+
+- **25,309** module imports matched the candidate `vmlinux` CRC.
+- **3,958** more imports matched the CRC of a **unique vendor .ko provider**.
+- **0** compared imports had mismatched CRC.
+- **14** imports have no provider in the scanned inventory:
+  `rfkill_*` (btpower/cfg80211) and `arc4_*` (mac80211).
+  Candidate kernel Kconfig has `CONFIG_RFKILL=m` and
+  `CONFIG_CRYPTO_LIB_ARC4=m`; the matching module provider may
+  be in a different Android DLKM partition.
+- **990** exported names occur in multiple vendor modules, including
+  **403** names for which alternate providers expose different CRCs.
+  None of the captured imported names in the inventory depends on
+  one of these ambiguous exported names. These provider conflicts
+  require loading-order review rather than automatic bootloop claims.
+
+The successful Actions #233 provides a full end-to-end smoke test of
+KMI Guard in `audit` mode: artifact generated, no vendor manifest
+included, correctly marked `UNVERIFIED`. The `vmlinux.symvers`
+and `kernel.config` bytes from #233 and the earlier #184 are identical.
+
+**Limit:** Vendor_boot, ODM and other module roots remain unavailable
+in the device post-boot namespace, so neither complete compatibility
+nor guaranteed Android bootability can be claimed. CRC equality
+does not replace Android STG/DWARF ABI type comparison.
 
 ## One-time device input (needed for strict enforcement)
 
