@@ -27,18 +27,25 @@ The Python standard-library collector can run **on the device**, avoiding
 transporting proprietary .ko files to a computer. It never calls insmod,
 modprobe, dd, mount, flashing tools, or any network API.
 
-On the phone, after reviewing `scripts/kmi_collect_android.py`, give
-Termux the usual shared-storage access and run:
+On the phone, after reviewing `scripts/kmi_collect_android.py`
+and `scripts/kmi_capture_termux.sh`, grant Termux ordinary
+shared-storage access, then use the wrapper:
 
-    sudo "$PREFIX/bin/python3" scripts/kmi_collect_android.py
+    bash scripts/kmi_capture_termux.sh
 
-The default output is timestamped and placed in
-`/sdcard/Documents/KMI-Guard/android-kmi-vendor-YYYYMMDD-HHMMSS.json`.
-This public Documents subfolder is accessible through Android's system
-Storage Access Framework (SAF) picker. **No secondary copy out of
-`$PREFIX/tmp` is required.** An explicit `--output` can override
-the location. A root process creates the output directory if needed;
-the JSON is metadata only, not module binary content.
+The wrapper checks that `/sdcard/Documents/KMI-Guard/` is writable by
+the **regular Termux user**, runs the collector with `sudo` to read
+protected modules into a private temporary file, returns ownership and
+copies the metadata-only JSON into the SAF-accessible Documents folder.
+This avoids relying on root's separate Android emulated-storage mount
+namespace for the final write. The temporary file is removed after the
+copy. Pass additional collector arguments to the wrapper if needed, for
+example `--root system_dlkm=/system/lib/modules`.
+
+The underlying Python collector also defaults to a timestamped
+`/sdcard/Documents/KMI-Guard/android-kmi-vendor-YYYYMMDD-HHMMSS.json`
+when called directly, but direct root writes to shared storage may fail
+in some root mount namespaces. **The wrapper is preferred.**
 
 If the Documents folder is not writable in the current scoped-storage
 configuration, first use the normal Termux account to create/access the
