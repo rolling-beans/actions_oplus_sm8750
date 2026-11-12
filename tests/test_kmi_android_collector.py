@@ -121,9 +121,14 @@ class AndroidKmiCollectorTests(unittest.TestCase):
         self.assertTrue(manifest["modules"][0]["boot_requested"])
 
     def test_termux_wrapper_shell_syntax(self):
-        script = Path(__file__).resolve().parents[1] / "scripts" / "kmi_capture_termux.sh"
-        proc = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        root = Path(__file__).resolve().parents[1] / "scripts"
+        for name in ("kmi_capture_termux.sh", "kmi_capture_btf_termux.sh",
+                     "kmi_next_stage_termux.sh"):
+            with self.subTest(script=name):
+                script = root / name
+                proc = subprocess.run(["bash", "-n", str(script)],
+                                      capture_output=True, text=True)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_default_output_is_saf_accessible_documents(self):
         with patch.object(collect, "collect", return_value=0) as action:
