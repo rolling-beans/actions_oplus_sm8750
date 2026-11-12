@@ -174,12 +174,12 @@ and synthetic cgroup drift detection PASS.
 
 The previous reference from Actions #233 was **build-verified, not boot-verified**.
 A running kernel may expose its actual BTF as the read-only sysfs file
-\`/sys/kernel/btf/vmlinux\`. This enables an independent comparison against
-the kernel build's candidate \`type-layouts.txt\` **without flashing anything**.
+`/sys/kernel/btf/vmlinux`. This enables an independent comparison against
+the kernel build's candidate `type-layouts.txt` **without flashing anything**.
 
-The standard-library collector \`scripts/kmi_btf_snapshot.py\` extracts only
-five named structures (\`task_struct\`, \`cgroup\`, \`cfs_rq\`, \`rq\`,
-\`task_group\`), each structure's size and its named member offsets,
+The standard-library collector `scripts/kmi_btf_snapshot.py` extracts only
+five named structures (`task_struct`, `cgroup`, `cfs_rq`, `rq`,
+`task_group`), each structure's size and its named member offsets,
 bitfield widths and type names. It records a SHA-256 of the raw input but
 **does not store or transmit the raw BTF binary**.
 
@@ -187,13 +187,13 @@ From a cloned repository in Termux, run:
 
     bash scripts/kmi_capture_btf_termux.sh
 
-The wrapper creates \`/sdcard/Documents/KMI-Guard/live-kernel-btf-*.json\`
-with the regular Termux user's storage permission. It only uses \`sudo\`
+The wrapper creates `/sdcard/Documents/KMI-Guard/live-kernel-btf-*.json`
+with the regular Termux user's storage permission. It only uses `sudo`
 when reading the sysfs BTF requires it; a root process never writes
 the output file. No SELinux changes or kernel/device writes are made.
 
 A complete snapshot captured from the running device has the
-\`capture_kind=booted-kernel-btf-sysfs\` marker and can be reviewed as a
+`capture_kind=booted-kernel-btf-sysfs` marker and can be reviewed as a
 candidate boot-verified baseline. Review the device kernel release and
 vendor firmware fingerprint independently before blessing it as the
 reference for the appropriate firmware/build.
@@ -213,14 +213,14 @@ nor check all nested types and function ABI. Changes are advisory risks.
 A candidate that matches these five structures has not passed full KMI.
 
 The workflow automatically runs this comparison if a reviewed
-\`kmi/booted-kernel-btf.json\` is present. When absent,
-\`live-btf-diff.json\` is explicitly \`UNVERIFIED\`; it never silently
+`kmi/booted-kernel-btf.json` is present. When absent,
+`live-btf-diff.json` is explicitly `UNVERIFIED`; it never silently
 treats the provisional Actions baseline as boot-verified.
 No live BTF reference is committed yet, pending manual review.
 
 For a full structural ABI graph, Android's official
-\`stg\`/\`stgdiff\` analysis using reproducible vmlinux + DWARF and a
-reference \`.stg\` is still necessary:
+`stg`/`stgdiff` analysis using reproducible vmlinux + DWARF and a
+reference `.stg` is still necessary:
 https://source.android.com/docs/core/architecture/kernel/abi-monitor
 
 ## One-time device input (needed for strict enforcement)
