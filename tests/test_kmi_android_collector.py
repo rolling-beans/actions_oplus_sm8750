@@ -119,6 +119,14 @@ class AndroidKmiCollectorTests(unittest.TestCase):
         self.assertEqual(manifest["load_lists"][0]["entries"], ["foo-bar.ko"])
         self.assertTrue(manifest["modules"][0]["boot_requested"])
 
+    def test_default_output_is_saf_accessible_documents(self):
+        with patch.object(collect, "collect", return_value=0) as action:
+            self.assertEqual(collect.main([]), 0)
+        destination = action.call_args.args[0].output
+        self.assertTrue(destination.startswith(
+            "/sdcard/Documents/KMI-Guard/android-kmi-vendor-"))
+        self.assertTrue(destination.endswith(".json"))
+
     def test_metadata_only_no_modules_copied(self):
         source = self.root / "vendor"
         source.mkdir()
