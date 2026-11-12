@@ -1319,6 +1319,25 @@ jobs:
             echo "::notice title=Provisional BTF baseline::Layout comparison uses a NOT BOOT-VERIFIED reference (#233)"
           fi
 
+          # A reference captured from /sys/kernel/btf/vmlinux on a known
+          # booting device may be provided later. This is ADVISORY: no
+          # changes to mandatory CRC/enforce behavior.
+          LIVE_REF="$GITHUB_WORKSPACE/kmi-tools/kmi/booted-kernel-btf.json"
+          if [ -s "$LIVE_REF" ]; then
+            echo "::notice title=Live BTF reference present::Comparing five monitored structure layouts"
+            if ! python3 "$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_compare_live_btf.py" \
+                --live-json "$LIVE_REF" \
+                --candidate-layouts "$LAYOUTS" \
+                --report-json "$EVIDENCE/live-btf-diff.json" \
+                --report-md "$EVIDENCE/live-btf-diff.md"; then
+              echo "::warning title=Live BTF comparison unverified::See live-btf-diff artifact"
+            fi
+            cat "$EVIDENCE/live-btf-diff.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n' '{"schema_version":1,"status":"UNVERIFIED","reason":"No boot-verified live BTF reference supplied; provisional BTF is advisory only","guaranteed_android_boot_failure":false}' > "$EVIDENCE/live-btf-diff.json"
+            echo "::notice title=No boot-verified BTF reference::Live type layout check is UNVERIFIED"
+          fi
+
           GUARD="$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_guard.py"
           args=(audit
             --symvers "$SYMVERS"
