@@ -26,6 +26,7 @@ DEFAULT_SOURCES = {
     "vendor": "/vendor/lib/modules",
     "odm": "/odm/lib/modules",
     "vendor_boot": "/lib/modules",
+    "system_dlkm": "/system_dlkm/lib/modules",
 }
 # Module load policies may live in etc/ instead of lib/modules/.
 # Limit discovery to known system paths, rather than scanning the filesystem.
@@ -35,8 +36,8 @@ LOAD_LIST_DIRS = {
     "odm": ("/odm/lib/modules", "/odm/etc",
             "/odm_dlkm/lib/modules", "/odm_dlkm/etc"),
     "vendor_boot": ("/lib/modules",),
-    "system": ("/system/lib/modules", "/system_dlkm/lib/modules",
-               "/system_dlkm/etc"),
+    "system_dlkm": ("/system/lib/modules", "/system_dlkm/lib/modules",
+                    "/system_dlkm/etc"),
 }
 
 
