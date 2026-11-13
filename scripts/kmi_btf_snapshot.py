@@ -150,32 +150,64 @@ class BTF:
             return f"func_proto({target})"
         return f"{KIND_LABEL[kind]} {name}"
 
-    def snapshot(self):
+    def snapshot(self, include_variants=False):
         by_name = {}
-        for rec in self.types[1:]:
-            if rec["kind"] == 4 and rec["name"] in MONITORED:
-                by_name.setdefault(rec["name"], []).append(rec)
+        for type_id, rec in enumerate(self.types):
+            if rec and rec["kind"] == 4 and rec["name"] in MONITORED:
+                by_name.setdefault(rec["name"], []).append((type_id, rec))
         result = {}
         warnings = []
+        variants = {}
         for name in MONITORED:
             matches = by_name.get(name, [])
-            if len(matches) != 1:
-                warnings.append(f"{name}: expected 1 complete struct, got {len(matches)}")
+            if not matches:
+                warnings.append(f"{name}: no complete BTF struct found")
                 continue
-            rec = matches[0]
-            fields = []
-            for field_name, type_id, bit_offset, bitfield_size in rec["members"]:
-                fields.append({
-                    "name": field_name,
-                    "bit_offset": bit_offset,
-                    "bitfield_size": bitfield_size,
-                    "type": self.type_name(type_id),
+            candidates = []
+            for type_id, rec in matches:
+                fields = [
+                    {
+                        "name": field_name,
+                        "bit_offset": bit_offset,
+                        "bitfield_size": bitfield_size,
+                        "type": self.type_name(member_type),
+                    }
+                    for field_name, member_type, bit_offset, bitfield_size in rec["members"]
+                ]
+                layout = {
+                    "size_bytes": rec["size_type"],
+                    "member_count": len(fields),
+                    "fields": fields,
+                }
+                digest = hashlib.sha256(
+                    json.dumps(layout, ensure_ascii=False, sort_keys=True,
+                               separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                candidates.append({
+                    "type_id": type_id,
+                    "layout_sha256": digest,
+                    "layout": layout,
                 })
-            result[name] = {
-                "size_bytes": rec["size_type"],
-                "member_count": len(fields),
-                "fields": fields,
-            }
+            signatures = {entry["layout_sha256"] for entry in candidates}
+            if len(matches) > 1:
+                variants[name] = {
+                    "definition_count": len(matches),
+                    "distinct_top_level_layouts": len(signatures),
+                    "candidates": candidates,
+                    "note": "Top-level layout equality is not a proof of identical nested ABI.",
+                }
+            if len(signatures) == 1:
+                # Multiple BTF IDs may carry an equal *surface* layout.
+                # Use the shared named-field layout; keep every ID available
+                # for provenance and graph-based future disambiguation.
+                result[name] = candidates[0]["layout"]
+            else:
+                warnings.append(
+                    f"{name}: {len(matches)} definitions have "
+                    f"{len(signatures)} distinct top-level layouts; "
+                    "do not choose by name or type ID")
+        if include_variants:
+            return result, warnings, variants
         return result, warnings
 
 
@@ -189,7 +221,7 @@ def capture_file(source):
     if len(data) > MAX_SOURCE_BYTES:
         raise BTFError("BTF data exceeds limit")
     btf = BTF(data)
-    layouts, warnings = btf.snapshot()
+    layouts, warnings, variants = btf.snapshot(include_variants=True)
     return {
         "schema_version": 1,
         "capture_kind": "booted-kernel-btf-sysfs" if str(path) == "/sys/kernel/btf/vmlinux" else "raw-btf",
@@ -201,6 +233,7 @@ def capture_file(source):
         "monitored_types": list(MONITORED),
         "status": "COMPLETE" if not warnings else "PARTIAL",
         "structures": layouts,
+        "duplicate_type_diagnostics": variants,
         "warnings": warnings,
         "notes": "BTF layout observation only; never sufficient proof of KMI compatibility or bootability.",
     }
