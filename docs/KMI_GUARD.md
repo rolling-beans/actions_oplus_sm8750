@@ -229,6 +229,32 @@ For a full structural ABI graph, Android's official
 reference `.stg` is still necessary:
 https://source.android.com/docs/core/architecture/kernel/abi-monitor
 
+## Diagnosing missing BTF or system_dlkm on rooted Android
+
+A normal Termux test reported both `/sys/kernel/btf/vmlinux` and
+`/system_dlkm/lib/modules` as missing. **This alone does not
+establish that root cannot see them.**
+
+The previous BTF wrapper contained an early unprivileged
+`-e /sys/kernel/btf/vmlinux` test that exited before considering
+`sudo`. This is fixed. To avoid masking the real cause, run a
+read-only dual-context diagnostic **before another BTF capture**:
+
+    bash scripts/kmi_probe_runtime_termux.sh
+
+It compares ordinary Termux and `sudo` process visibility, checks
+`/proc/1/root` for init's mount namespace, examines sysfs and
+system/ODM DLKM mount information, queries `/proc/config.gz` if
+present, and records loaded rfkill/ARC4-related module names.
+Two JSON outputs are created directly in the user's writable SAF
+`/sdcard/Documents/KMI-Guard/` directory.
+
+No tool attempts to mount a partition, enable BTF, alter SELinux,
+insert modules or flash anything. If **both root and init namespaces**
+lack vmlinux BTF, check the *running kernel's* Kconfig/build artifact
+before selecting a different reference source. A BTF-enabled `vmlinux`
+from a CI build is **not automatically boot-verified**.
+
 ## One-time device input (needed for strict enforcement)
 
 The GitHub repository intentionally does not include vendor modules. Collect the .ko files from the **exact active system firmware** (vendor_dlkm/odm_dlkm and any separately supplied vendor modules) without editing or flashing the device, and copy them to a trusted Linux environment. Preserve module paths and firmware/build fingerprint. If the module list has not been collected yet, **stay in audit mode**.
