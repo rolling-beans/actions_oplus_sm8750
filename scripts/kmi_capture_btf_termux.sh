@@ -6,7 +6,7 @@ set -euo pipefail
 HERE="$(cd -- "$(dirname -- "$0")" && pwd)"
 PYTHON="$PREFIX/bin/python3"
 PARSER="$HERE/kmi_btf_snapshot.py"
-OUTDIR="/sdcard/Documents/KMI-Guard"
+OUTDIR="${KMI_GUARD_SAF_DIR:-/sdcard/Documents/KMI-Guard}"
 
 if [[ ! -f "$PARSER" || ! -x "$PYTHON" ]]; then
   echo "BTF parser or Termux Python missing" >&2
