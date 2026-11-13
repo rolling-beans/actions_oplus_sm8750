@@ -223,6 +223,8 @@ def main(argv=None):
         print(f"BTF structures: {len(result['structures'])}/{len(MONITORED)}; "
               f"types: {result['btf_type_count']}; "
               f"status: {result['status']}", file=sys.stderr)
+        for warning in result["warnings"]:
+            print("BTF type warning:", warning, file=sys.stderr)
         return 0 if result["status"] == "COMPLETE" else 2
     except (OSError, BTFError, struct.error) as exc:
         print(f"BTF SNAPSHOT ERROR: {exc}", file=sys.stderr)
