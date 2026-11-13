@@ -255,6 +255,57 @@ lack vmlinux BTF, check the *running kernel's* Kconfig/build artifact
 before selecting a different reference source. A BTF-enabled `vmlinux`
 from a CI build is **not automatically boot-verified**.
 
+## Running OnePlus 13 BTF: complete five-structure surface audit (13 Nov 2026)
+
+The owner reran the read-only BTF collector after the duplicate-ID fix.
+The live kernel `6.6.144-palaziks-ShiftPorts` now reports **COMPLETE (5/5)**,
+with 163,643 BTF records. Its raw BTF SHA-256
+`9c7cb124d48d9001211a736b965583b880351a7c1051a4667f5aab52b130b041`
+matches the previous 3/5 capture byte for byte: the **diagnostic
+interpretation changed, not the running kernel**.
+
+- `task_struct`: 3 BTF IDs (251, 19056, 30774); all share the
+  same normalized top-level layout: **4800 bytes, 216 members**.
+- `cgroup`: 3 BTF IDs (471, 19072, 30751); all share the
+  same normalized top-level layout: **1920 bytes, 43 members**.
+- `cfs_rq`: **384 bytes, 27 members**.
+- `rq`: **3840 bytes, 84 members**.
+- `task_group`: **512 bytes, 21 members**.
+
+An independent offline comparison used the actual
+`type-layouts.txt` file from successful candidate Actions #233,
+rather than the provisional Actions reference as if it had booted.
+
+| Structure | Live / candidate size | Named fields with matching offsets | Shifted |
+|---|---:|---:|---:|
+| `task_struct` | 4800 / 4800 B | 212 | 0 |
+| `cgroup` | 1920 / 1920 B | 42 | 0 |
+| `cfs_rq` | 384 / 384 B | 26 | 0 |
+| `rq` | 3840 / 3840 B | 84 | 0 |
+| `task_group` | 512 / 512 B | 21 | 0 |
+| **Total** | **5 equal outer sizes** | **385** | **0** |
+
+The textual candidate `pahole` parser did not parse six
+top-level/anonymous entries (4 in `task_struct`, 1 in `cgroup`,
+1 in `cfs_rq`), so their structures were not fully compared.
+Even matching top-level field layouts do NOT prove all nested type
+graphs, STG structural ABI, or runtime boot safety.
+
+The owner observed **`bluetooth` absent from current
+`/proc/modules`**. Its presence in
+`system_dlkm/modules.load` does not establish that the kernel
+module actually loaded or that the boot process required it. The
+CRC mismatch for `sk_filter_trim_cap` remains independently
+verified **for candidate #233 versus `bluetooth.ko`**, not for
+the running kernel. A normal MODVERSIONS load attempt with #233
+would be rejected, but no guaranteed Android bootloop follows
+from this observation. Do not flash candidate #233 merely to
+investigate it.
+
+This is an *audited snapshot of observed metadata*, not a blanket
+claim that the working kernel is free of every possible defect.
+No kernel change, flash, remount or SELinux change is indicated.
+
 ## Live BTF duplicate type IDs — NOT a kernel crash diagnosis (13 Nov 2026)
 
 The owner supplied a JSON snapshot of the **already booted**
