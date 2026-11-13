@@ -255,6 +255,55 @@ lack vmlinux BTF, check the *running kernel's* Kconfig/build artifact
 before selecting a different reference source. A BTF-enabled `vmlinux`
 from a CI build is **not automatically boot-verified**.
 
+## Live BTF duplicate type IDs — NOT a kernel crash diagnosis (13 Nov 2026)
+
+The owner supplied a JSON snapshot of the **already booted**
+`6.6.144-palaziks-ShiftPorts` kernel with 163,643 BTF type records,
+7,120,322 input bytes, and a `PARTIAL` status. This status was
+caused by the first collector's overstrict condition
+`len(struct definitions with this name) == 1`:
+
+- `task_struct` — 3 definitions with the same BTF name;
+- `cgroup` — 3 definitions with the same BTF name;
+- `cfs_rq` — uniquely decoded, 384 bytes / 27 fields;
+- `rq` — uniquely decoded, 3840 bytes / 84 fields;
+- `task_group` — uniquely decoded, 512 bytes / 21 fields.
+
+The snapshot did **not** show two missing structures, heap corruption
+or instability. BTF consists of type metadata with type IDs; identical
+names can have multiple distinct records. No evidence yet proves
+whether the three records are equivalent or correspond to different
+type graphs.
+
+A first advisory comparison against candidate Actions #233
+`type-layouts.txt` confirmed identical **outer sizes** for
+`cfs_rq`, `rq`, `task_group`, and **no shifted offsets among
+the fields that could be unambiguously matched**. This is a
+surface-level observation, not full ABI/STG assurance.
+
+**Fix:** the collector now computes a SHA-256 for each BTF
+definition's *top-level* named field layout (outer size, field
+name, type rendering, bit offset and bit width). When all copies
+have identical signatures, their common top-level layout is usable
+for the five-struct comparison; the alternate type IDs remain in
+`duplicate_type_diagnostics`. When signatures differ, it
+retains every definition with BTF type ID and field metadata,
+leaves the affected structure unresolved and emits `PARTIAL`
+with explicit warnings. It never chooses the first definition
+or matches a candidate to a preferred reference arbitrarily.
+Matching top-level layouts does **not** imply equal nested type graphs.
+
+For the **separate** `sk_filter_trim_cap` CRC discrepancy in
+candidate #233 versus `system_dlkm/bluetooth.ko`, do not infer
+that the booted kernel has the same CRC, nor that a Bluetooth
+module failure (if present) necessarily causes Android bootloop.
+Check the running kernel CRC / module load status independently.
+
+**Safety decision:** the owner should not change the working kernel,
+unlock anything, disable SELinux, or flash solely to address
+the BTF `PARTIAL` flag. Diagnose the duplicate records in a
+new read-only BTF JSON snapshot.
+
 ## Combined vendor + system_dlkm CRC result (13 Nov 2026)
 
 A second device-owned, read-only metadata capture successfully decoded
