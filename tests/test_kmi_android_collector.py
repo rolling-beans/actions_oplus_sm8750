@@ -130,6 +130,20 @@ class AndroidKmiCollectorTests(unittest.TestCase):
                                       capture_output=True, text=True)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
 
+    def test_system_dlkm_stage_does_not_precheck_unprivileged_mount(self):
+        root = Path(__file__).resolve().parents[1] / "scripts"
+        stage = (root / "kmi_next_stage_termux.sh").read_text()
+        self.assertNotIn('[[ -d "$dir" ]]', stage)
+        self.assertIn('system_dlkm=/system_dlkm/lib/modules', stage)
+        self.assertIn('bash "$HERE/kmi_capture_termux.sh"', stage)
+        self.assertIn('CAPTURED=1', stage)
+
+    def test_btf_stage_does_not_precheck_unprivileged_sysfs_path(self):
+        root = Path(__file__).resolve().parents[1] / "scripts"
+        stage = (root / "kmi_capture_btf_termux.sh").read_text()
+        self.assertNotIn('[[ ! -e /sys/kernel/btf/vmlinux ]]', stage)
+        self.assertIn('sudo "$PYTHON" "$PARSER"', stage)
+
     def test_default_output_is_saf_accessible_documents(self):
         with patch.object(collect, "collect", return_value=0) as action:
             self.assertEqual(collect.main([]), 0)
