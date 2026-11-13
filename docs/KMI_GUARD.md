@@ -255,6 +255,59 @@ lack vmlinux BTF, check the *running kernel's* Kconfig/build artifact
 before selecting a different reference source. A BTF-enabled `vmlinux`
 from a CI build is **not automatically boot-verified**.
 
+## Combined vendor + system_dlkm CRC result (13 Nov 2026)
+
+A second device-owned, read-only metadata capture successfully decoded
+**95/95** `system_dlkm` modules, including the `rfkill` and `libarc4`
+providers and 77 entries in its `modules.load`. All input modules
+were decoded without warnings. The raw private manifest is **not** committed.
+
+Independent off-device analysis used:
+- 498 vendor modules from the earlier private v2 inventory;
+- 95 system_dlkm modules from the new capture;
+- the actual `vmlinux.symvers` emitted by Actions #233.
+
+Results for **34,353 imported CRCs**:
+
+| Resolution | Import count |
+|---|---:|
+| CRC matches candidate `vmlinux` | 29,892 |
+| CRC matches an unambiguous .ko provider | 4,460 |
+| Unknown provider | 0 |
+| **CRC mismatch** | **1** |
+
+The mismatch is **`system_dlkm/bluetooth.ko`** importing
+`sk_filter_trim_cap`:
+
+- module requirement: `0x553e24af`
+- candidate vmlinux export: `0x43eebd89`
+- listed in system_dlkm `modules.load`: yes
+- proved indispensable for Android boot: **no**
+
+With ordinary `CONFIG_MODVERSIONS=y` loading, this mismatch predicts
+rejection of `bluetooth.ko` **if it is loaded against the candidate
+kernel**. It does **not** prove a guaranteed Android bootloop. The
+kernel currently running on the phone has not been demonstrated to
+have identical CRCs to candidate #233; matching `uname -r` strings
+cannot establish that.
+
+All 14 previously unresolved `rfkill_*` and `arc4_*` imports were
+accounted for with matching CRCs by the new `system_dlkm` providers.
+
+The BTF capture from the running kernel parsed **163,643** BTF
+types but resolved only **3/5** monitored structs (status `PARTIAL`).
+The earlier shell wrapper deleted the valid JSON whenever the
+collector returned 2. This is now fixed: valid partial JSON is
+**retained in SAF**, with named warnings, remains non-PASS, and the
+live comparator can analyze only the available structs without
+claiming full coverage.
+
+**Actionability:** A known module-level CRC failure now exists. Before
+calling it an Android boot blocker, validate the real boot-time loading
+policy, whether Bluetooth is actually loaded with stock vendor
+modules, and which exact kernel binary is running. A future BTF
+or STG layout match still cannot override this deterministic CRC result.
+
 ## Confirmed OnePlus 13 root visibility (13 Nov 2026)
 
 Two read-only Android probe JSON files were provided by the device owner.
