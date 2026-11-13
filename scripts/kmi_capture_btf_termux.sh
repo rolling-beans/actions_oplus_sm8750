@@ -12,10 +12,9 @@ if [[ ! -f "$PARSER" || ! -x "$PYTHON" ]]; then
   echo "BTF parser or Termux Python missing" >&2
   exit 2
 fi
-if [[ ! -e /sys/kernel/btf/vmlinux ]]; then
-  echo "Running kernel does not expose /sys/kernel/btf/vmlinux" >&2
-  exit 2
-fi
+# Do not test sysfs existence only in the unprivileged namespace:
+# sudo may have different mount visibility / credentials. Attempt a
+# read-only privileged open if ordinary Termux cannot read it.
 if ! mkdir -p -- "$OUTDIR" || [[ ! -w "$OUTDIR" ]]; then
   echo "Cannot write $OUTDIR as unprivileged Termux user" >&2
   exit 2
