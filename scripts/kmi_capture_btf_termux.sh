@@ -22,7 +22,7 @@ fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 TARGET="$(mktemp "$OUTDIR/live-kernel-btf-$STAMP-XXXXXXXX.json")"
-chmod 600 "$TARGET"
+chmod 600 "$TARGET" 2>/dev/null || true  # Android emulated storage may not implement chmod.
 REMOVE_PARTIAL=1
 cleanup() { if [[ -n "$REMOVE_PARTIAL" ]]; then rm -f -- "$TARGET"; fi; }
 trap cleanup EXIT
