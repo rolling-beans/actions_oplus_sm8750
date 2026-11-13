@@ -134,7 +134,8 @@ class AndroidKmiCollectorTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1] / "scripts"
         stage = (root / "kmi_next_stage_termux.sh").read_text()
         self.assertNotIn('[[ -d "$dir" ]]', stage)
-        self.assertIn('system_dlkm=/system_dlkm/lib/modules', stage)
+        self.assertIn('for dir in /system_dlkm/lib/modules /system/lib/modules', stage)
+        self.assertIn('system_dlkm=$dir', stage)
         self.assertIn('bash "$HERE/kmi_capture_termux.sh"', stage)
         self.assertIn('CAPTURED=1', stage)
 
