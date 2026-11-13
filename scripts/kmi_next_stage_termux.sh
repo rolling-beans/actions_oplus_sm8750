@@ -29,12 +29,7 @@ if [[ "$CAPTURED" != 1 ]]; then
   echo "SYSTEM_DLKM_CAPTURE_UNVERIFIED (root collection failed or no modules)" >&2
 fi
 
-echo "=== Other first-stage module paths: read-only availability ==="
-for dir in /lib/modules /odm/lib/modules /odm_dlkm/lib/modules; do
-  if [[ -d "$dir" ]]; then
-    echo "AVAILABLE: $dir (not modified or collected)"
-  else
-    echo "UNAVAILABLE: $dir"
-  fi
-done
+echo "=== Other first-stage module paths ==="
+echo "Not inferred from unprivileged tests. See separate sudo runtime probe."
+echo "No other module roots were modified or collected."
 echo "Outputs, if available: /sdcard/Documents/KMI-Guard/"
