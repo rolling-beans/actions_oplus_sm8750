@@ -71,6 +71,49 @@ class CompareLiveBTFTests(unittest.TestCase):
         # Unknown field types are not by themselves proof of layout change.
         self.assertFalse(result["guaranteed_android_boot_failure"])
 
+    def test_partial_btf_three_structs_preserved_and_compared(self):
+        live, candidate = fixtures()
+        live["status"] = "PARTIAL"
+        for name in ("rq", "cfs_rq"):
+            del live["structures"][name]
+        live["warnings"] = [
+            "rq: expected 1 complete struct, got 0",
+            "cfs_rq: expected 1 complete struct, got 0",
+        ]
+        result = compare.compare(live, candidate)
+        self.assertEqual(result["status"], "PARTIAL_BTF_COVERAGE")
+        self.assertEqual(len(result["checked_types"]), 3)
+        self.assertEqual(sorted(result["unverified_types"]), ["cfs_rq", "rq"])
+        self.assertFalse(result["guaranteed_android_boot_failure"])
+
+    def test_partial_btf_still_reports_confirmed_offset_change(self):
+        live, candidate = fixtures(shift="cgroup")
+        live["status"] = "PARTIAL"
+        del live["structures"]["rq"]
+        result = compare.compare(live, candidate)
+        self.assertEqual(result["status"], "PARTIAL_MONITORED_LAYOUT_DIFFERENCE")
+        self.assertEqual(result["changed_types"], ["cgroup"])
+        self.assertEqual(result["unverified_types"], ["rq"])
+
+    def test_partial_cli_outputs_report_but_nonzero_exit(self):
+        live, candidate = fixtures()
+        live["status"] = "PARTIAL"
+        del live["structures"]["rq"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "live.json").write_text(json.dumps(live))
+            (root / "candidate.txt").write_text(candidate)
+            rc = compare.main([
+                "--live-json", str(root / "live.json"),
+                "--candidate-layouts", str(root / "candidate.txt"),
+                "--report-json", str(root / "report.json"),
+                "--report-md", str(root / "report.md"),
+            ])
+            self.assertEqual(rc, 2)
+            report = json.loads((root / "report.json").read_text())
+            self.assertEqual(report["status"], "PARTIAL_BTF_COVERAGE")
+            self.assertIn("rq", (root / "report.md").read_text())
+
     def test_reference_must_be_live_sysfs(self):
         live, candidate = fixtures()
         live["capture_kind"] = "raw-btf"
