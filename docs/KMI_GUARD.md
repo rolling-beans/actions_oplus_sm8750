@@ -255,6 +255,50 @@ lack vmlinux BTF, check the *running kernel's* Kconfig/build artifact
 before selecting a different reference source. A BTF-enabled `vmlinux`
 from a CI build is **not automatically boot-verified**.
 
+## Confirmed OnePlus 13 root visibility (13 Nov 2026)
+
+Two read-only Android probe JSON files were provided by the device owner.
+The diagnosis is **EACCES**, not missing BTF or missing system_dlkm.
+
+- Normal Termux UID **10435** and sudo UID **0** both used mount
+  namespace `mnt:[4026535912]`. Init used `mnt:[4026532717]`.
+  A namespace switch is unnecessary for the inspected files.
+- Normal Termux `/sys/kernel/btf/vmlinux` and
+  `/system_dlkm/lib/modules` checks returned **EACCES (13)**.
+- Root **successfully read** running-kernel `/sys/kernel/btf/vmlinux`:
+  **7,120,322 bytes**, magic `9f eb 01 00` (little-endian BTF).
+- Root found `/system_dlkm/lib/modules` mounted from EROFS,
+  with **95 .ko** files. The alternate `/system/lib/modules`
+  resolves to the same number; do not double-count.
+- Root read `/proc/config.gz`, confirming
+  `CONFIG_DEBUG_INFO_BTF=y`,
+  `CONFIG_DEBUG_INFO_BTF_MODULES=y`,
+  `CONFIG_MODVERSIONS=y`,
+  `CONFIG_RFKILL=m`, and
+  `CONFIG_CRYPTO_LIB_ARC4=m`.
+- Loaded module names already include `rfkill`, `libarc4`,
+  `btpower`, `cfg80211` and `mac80211`. Thus providers for
+  the **14 previously unresolved** imports are present at runtime.
+  Their *CRC compatibility against the candidate kernel* still
+  needs the 95-module `system_dlkm` manifest.
+
+Fixed a second early-exit bug: `kmi_next_stage_termux.sh`
+previously tested `[[ -d "$dir" ]]` from ordinary Termux, which
+returns false on **EACCES** and incorrectly classified system_dlkm
+as absent. The stage now attempts root-based capture directly,
+trying `/system_dlkm/lib/modules` followed by `/system/lib/modules`.
+No mount changes are needed.
+
+The BTF wrapper also no longer refuses the file based only on
+ordinary Termux's `-e` check. Root may read BTF while an
+unprivileged process cannot even `stat` it.
+
+**Next action:** capture the booted kernel BTF JSON and 95-module
+system_dlkm manifest directly to
+`/sdcard/Documents/KMI-Guard` via the corrected wrapper.
+These results are not yet available, so do not mark the structural
+ABI or the remaining 14 CRC checks as passed.
+
 ## One-time device input (needed for strict enforcement)
 
 The GitHub repository intentionally does not include vendor modules. Collect the .ko files from the **exact active system firmware** (vendor_dlkm/odm_dlkm and any separately supplied vendor modules) without editing or flashing the device, and copy them to a trusted Linux environment. Preserve module paths and firmware/build fingerprint. If the module list has not been collected yet, **stay in audit mode**.
