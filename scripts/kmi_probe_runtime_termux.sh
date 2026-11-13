@@ -15,7 +15,7 @@ mkdir -p -- "$OUTDIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 USER_OUT="$(mktemp "$OUTDIR/probe-user-$STAMP-XXXXXXXX.json")"
 ROOT_OUT="$(mktemp "$OUTDIR/probe-root-$STAMP-XXXXXXXX.json")"
-chmod 600 "$USER_OUT" "$ROOT_OUT"
+chmod 600 "$USER_OUT" "$ROOT_OUT" 2>/dev/null || true  # Android emulated storage may not implement chmod.
 INCOMPLETE=1
 cleanup() {
   if [[ "$INCOMPLETE" == 1 ]]; then
