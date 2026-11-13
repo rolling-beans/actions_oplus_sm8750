@@ -38,7 +38,7 @@ sudo /system/bin/chown "$(id -u):$(id -g)" "$TMPFILE"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 TARGET="$(mktemp "$OUTDIR/android-kmi-vendor-$STAMP-XXXXXXXX.json")"
-chmod 600 "$TARGET"
+chmod 600 "$TARGET" 2>/dev/null || true  # SAF emulated storage may not implement chmod.
 if ! cp -- "$TMPFILE" "$TARGET"; then
   rm -f -- "$TARGET"
   exit 1
