@@ -50,8 +50,8 @@ def fields_from_pahole(body):
 
 
 def compare(live, candidate_text):
-    if live.get("schema_version") != 1 or live.get("status") != "COMPLETE":
-        raise ValueError("live BTF evidence incomplete or schema unsupported")
+    if live.get("schema_version") != 1 or live.get("status") not in ("COMPLETE", "PARTIAL"):
+        raise ValueError("live BTF evidence invalid or schema unsupported")
     if live.get("capture_kind") != "booted-kernel-btf-sysfs":
         raise ValueError("reference must be captured from running kernel BTF sysfs")
     layouts = live.get("structures", {})
@@ -59,10 +59,15 @@ def compare(live, candidate_text):
     changes = []
     uncertain = []
     details = {}
+    absent = []
     for name in kmi_layout_diff.MONITORED:
         item = layouts.get(name)
         if not item or not isinstance(item.get("fields"), list):
-            raise ValueError(f"live BTF missing struct {name}")
+            if live["status"] == "COMPLETE":
+                raise ValueError(f"live BTF missing struct {name}")
+            absent.append(name)
+            uncertain.append(name)
+            continue
         size_live = item.get("size_bytes")
         size_candidate = source[name]["size"]
         if not isinstance(size_live, int) or size_live <= 0:
@@ -104,15 +109,25 @@ def compare(live, candidate_text):
             changes.append(name)
         if missing_live or missing_candidate or rejected or len(common) < 5:
             uncertain.append(name)
-    status = ("MONITORED_LAYOUT_DIFFERENCE" if changes else
-              "NO_CHECKED_OFFSET_DIFFERENCE" if uncertain else
-              "NO_MONITORED_LAYOUT_DIFFERENCE")
+    if not details:
+        raise ValueError("no monitored BTF structures available for comparison")
+    partial = live["status"] == "PARTIAL"
+    status = (
+        "PARTIAL_MONITORED_LAYOUT_DIFFERENCE" if partial and changes else
+        "PARTIAL_BTF_COVERAGE" if partial else
+        "MONITORED_LAYOUT_DIFFERENCE" if changes else
+        "NO_CHECKED_OFFSET_DIFFERENCE" if uncertain else
+        "NO_MONITORED_LAYOUT_DIFFERENCE"
+    )
     return {
         "schema_version": 1, "status": status,
         "booted_kernel_release": live.get("kernel_release"),
         "live_btf_sha256": live.get("btf_sha256"),
         "candidate_pahole_sha256": hashlib.sha256(candidate_text.encode()).hexdigest(),
-        "checked_types": list(kmi_layout_diff.MONITORED),
+        "checked_types": list(details),
+        "unverified_types": absent,
+        "btf_capture_status": live["status"],
+        "btf_warnings": live.get("warnings", []),
         "changed_types": changes,
         "uncertain_types": uncertain,
         "type_details": details,
@@ -132,7 +147,7 @@ def main(argv=None):
         live = json.loads(Path(args.live_json).read_text())
         cand = Path(args.candidate_layouts).read_text()
         result = compare(live, cand)
-        rc = 0
+        rc = 2 if result["btf_capture_status"] == "PARTIAL" else 0
     except (OSError, ValueError, KeyError, TypeError) as exc:
         result = {"schema_version": 1, "status": "UNVERIFIED", "reason": str(exc),
                   "guaranteed_android_boot_failure": False}
@@ -146,6 +161,13 @@ def main(argv=None):
     if result["status"] == "UNVERIFIED":
         lines.append(result["reason"])
     else:
+        if result.get("unverified_types"):
+            lines.append("Missing in running BTF: " +
+                         ", ".join(result["unverified_types"]) + "\n")
+        for warning in result.get("btf_warnings", []):
+            lines.append("BTF warning: " + warning)
+        if result.get("btf_warnings"):
+            lines.append("")
         for name in result["checked_types"]:
             rec = result["type_details"][name]
             lines.extend([f"### {name}",
