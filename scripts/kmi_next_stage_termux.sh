@@ -12,23 +12,21 @@ else
   echo "BTF_CAPTURE_UNVERIFIED (no changes applied)" >&2
 fi
 
-echo "=== Discover system_dlkm provider modules ==="
-MODULE_DIR=""
-for dir in /system/lib/modules /system_dlkm/lib/modules; do
-  if [[ -d "$dir" ]]; then
-    MODULE_DIR="$dir"
+echo "=== Discover system_dlkm provider modules (root read) ==="
+# Do not test the directory with unprivileged [[ -d ]]: Android may return
+# EACCES even when the modules exist and sudo can read them.
+# The collector itself runs as root and checks whether modules are present.
+CAPTURED=0
+for dir in /system_dlkm/lib/modules /system/lib/modules; do
+  echo "Trying root-readable module root: $dir"
+  if bash "$HERE/kmi_capture_termux.sh" --root "system_dlkm=$dir"; then
+    echo "SYSTEM_DLKM_CAPTURE_OK root=$dir"
+    CAPTURED=1
     break
   fi
 done
-if [[ -z "$MODULE_DIR" ]]; then
-  echo "system_dlkm module directory unavailable in current namespace" >&2
-else
-  echo "Module root: $MODULE_DIR"
-  if bash "$HERE/kmi_capture_termux.sh" --root "system_dlkm=$MODULE_DIR"; then
-    echo "SYSTEM_DLKM_CAPTURE_OK"
-  else
-    echo "SYSTEM_DLKM_CAPTURE_UNVERIFIED (see previous diagnostic)" >&2
-  fi
+if [[ "$CAPTURED" != 1 ]]; then
+  echo "SYSTEM_DLKM_CAPTURE_UNVERIFIED (root collection failed or no modules)" >&2
 fi
 
 echo "=== Other first-stage module paths: read-only availability ==="
