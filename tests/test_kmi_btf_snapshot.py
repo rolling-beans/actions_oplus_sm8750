@@ -8,7 +8,8 @@ from pathlib import Path
 from scripts import kmi_btf_snapshot as snap
 
 
-def simple_btf(names=None, duplicate=False, member_bit=16):
+def simple_btf(names=None, duplicate=False, member_bit=16,
+               duplicate_size_delta=0):
     names = list(names or snap.MONITORED)
     strings = b"\0"
     offsets = {}
@@ -22,8 +23,10 @@ def simple_btf(names=None, duplicate=False, member_bit=16):
         types.extend(struct.pack("<III", offsets.get(name, 0), info, size))
         types.extend(rest)
     rec("int", 1, 4, rest=struct.pack("<I", 0x01000020))
-    for name in names + ([names[0]] if duplicate else []):
-        rec(name, 4, 64, 1,
+    original_names = names + ([names[0]] if duplicate else [])
+    for i, name in enumerate(original_names):
+        size = 64 + (duplicate_size_delta if duplicate and i == len(names) else 0)
+        rec(name, 4, size, 1,
             struct.pack("<III", offsets["field_a"], 1, member_bit))
     header = struct.pack("<HBBIIIII", 0xeb9f, 1, 0, 24,
                          0, len(types), len(types), len(strings))
@@ -46,10 +49,33 @@ class BTFSnapshotTests(unittest.TestCase):
         self.assertEqual(list(tree), ["cgroup"])
         self.assertEqual(len(warnings), len(snap.MONITORED) - 1)
 
-    def test_duplicate_type_does_not_pass(self):
-        tree, warnings = snap.BTF(simple_btf(duplicate=True)).snapshot()
+    def test_duplicate_equal_surface_layout_is_allowed_with_diagnostics(self):
+        tree, warnings, variants = snap.BTF(simple_btf(duplicate=True)).snapshot(
+            include_variants=True)
+        self.assertEqual(warnings, [])
+        self.assertIn("task_struct", tree)
+        self.assertEqual(variants["task_struct"]["definition_count"], 2)
+        self.assertEqual(variants["task_struct"]["distinct_top_level_layouts"], 1)
+        self.assertEqual(len({c["layout_sha256"] for c in
+                              variants["task_struct"]["candidates"]}), 1)
+
+    def test_duplicate_divergent_surface_layout_is_not_silently_selected(self):
+        raw = simple_btf(duplicate=True, duplicate_size_delta=8)
+        tree, warnings, variants = snap.BTF(raw).snapshot(include_variants=True)
         self.assertNotIn("task_struct", tree)
-        self.assertTrue(any("task_struct" in text for text in warnings))
+        self.assertTrue(any("distinct top-level layouts" in text for text in warnings))
+        self.assertEqual(variants["task_struct"]["definition_count"], 2)
+        self.assertEqual(variants["task_struct"]["distinct_top_level_layouts"], 2)
+        self.assertEqual(sorted(x["layout"]["size_bytes"]
+                                for x in variants["task_struct"]["candidates"]),
+                         [64, 72])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kernel.btf"
+            path.write_bytes(raw)
+            report = snap.capture_file(path)
+            self.assertEqual(report["status"], "PARTIAL")
+            self.assertIn("task_struct", report["duplicate_type_diagnostics"])
+            self.assertEqual(len(report["structures"]), len(snap.MONITORED) - 1)
 
     def test_truncated_btf_does_not_pass(self):
         with self.assertRaises(snap.BTFError):
