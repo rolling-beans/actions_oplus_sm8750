@@ -77,6 +77,19 @@ class BTFSnapshotTests(unittest.TestCase):
             self.assertIn("task_struct", report["duplicate_type_diagnostics"])
             self.assertEqual(len(report["structures"]), len(snap.MONITORED) - 1)
 
+    def test_three_same_named_btf_records_do_not_imply_corruption(self):
+        # Exactly the situation observed in the running OnePlus 13 BTF.
+        names = list(snap.MONITORED) + ["task_struct"]
+        data = simple_btf(names=names, duplicate=True, duplicate_size_delta=16)
+        structs, warnings, duplicates = snap.BTF(data).snapshot(
+            include_variants=True)
+        self.assertIn("task_struct", duplicates)
+        self.assertEqual(duplicates["task_struct"]["definition_count"], 3)
+        self.assertEqual(duplicates["task_struct"]["distinct_top_level_layouts"], 2)
+        self.assertNotIn("task_struct", structs)
+        self.assertTrue(any("task_struct" in warning for warning in warnings))
+        self.assertEqual(len(structs), len(snap.MONITORED) - 1)
+
     def test_truncated_btf_does_not_pass(self):
         with self.assertRaises(snap.BTFError):
             snap.BTF(simple_btf()[:-10])
