@@ -29,13 +29,46 @@ trap cleanup EXIT
 
 # The shell opens TARGET as the regular user; sudo only reads protected
 # /sys/kernel/btf/vmlinux. No root-owned file in shared storage.
+# A PARTIAL capture is useful *evidence* and MUST NOT be deleted merely
+# because the Python collector correctly returns nonzero for missing types.
+RC=2
 if [[ -r /sys/kernel/btf/vmlinux ]]; then
-  "$PYTHON" "$PARSER" --source /sys/kernel/btf/vmlinux --output - > "$TARGET"
+  "$PYTHON" "$PARSER" --source /sys/kernel/btf/vmlinux --output - > "$TARGET" && RC=0 || RC=$?
 elif command -v sudo >/dev/null 2>&1; then
-  sudo "$PYTHON" "$PARSER" --source /sys/kernel/btf/vmlinux --output - > "$TARGET"
+  sudo "$PYTHON" "$PARSER" --source /sys/kernel/btf/vmlinux --output - > "$TARGET" && RC=0 || RC=$?
 else
   echo "BTF source unreadable; Termux sudo not installed" >&2
   exit 2
 fi
+
+# Keep only a well-formed complete or partial JSON snapshot. An empty,
+# truncated, or invalid result remains disposable and is cleaned by trap.
+if ! "$PYTHON" - "$TARGET" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text())
+    assert data["schema_version"] == 1
+    assert data["capture_kind"] == "booted-kernel-btf-sysfs"
+    assert data["status"] in ("COMPLETE", "PARTIAL")
+    assert isinstance(data["structures"], dict)
+    assert isinstance(data["warnings"], list)
+except (OSError, KeyError, ValueError, TypeError, AssertionError) as exc:
+    print("Unusable BTF JSON: " + str(exc), file=sys.stderr)
+    sys.exit(2)
+print("Retained BTF snapshot status:", data["status"],
+      "structures:", ", ".join(data["structures"]) or "(none)")
+for warning in data["warnings"]:
+    print("BTF warning:", warning)
+PY
+then
+  exit 2
+fi
 REMOVE_PARTIAL=
 printf 'SAF-accessible live BTF structure snapshot: %s\n' "$TARGET"
+if [[ "$RC" != 0 ]]; then
+  echo "BTF is partial; JSON was retained for diagnosis (not a KMI PASS)." >&2
+fi
+exit "$RC"
