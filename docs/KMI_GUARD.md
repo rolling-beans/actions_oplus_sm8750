@@ -255,6 +255,72 @@ lack vmlinux BTF, check the *running kernel's* Kconfig/build artifact
 before selecting a different reference source. A BTF-enabled `vmlinux`
 from a CI build is **not automatically boot-verified**.
 
+## Proven booted kernel image matches Actions #233 (13 Nov 2026)
+
+**The booted phone is proven to be running the exact candidate kernel
+Image from successful GitHub Actions #233, not merely the same
+`uname -r` string.** Independent read-only SHA-256 verification:
+
+- Actions workflow ID `42877326850` (run #233), dispatched
+  **2026-11-10 18:38:59 UTC**, completed **18:53:14 UTC**.
+- Artifact `AnyKernel3_ReSukiSU_41744_6.6.144_palaziks_AOSP-ShiftPorts.zip`
+  includes uncompressed arm64 `Image` **44,431,872 bytes**,
+  SHA-256 `3e5d3440de34a0c67b82320053428e8e23af56a8bb944b32a04808b91b09bafc`.
+- Phone root reported active `ro.boot.slot_suffix=_a`. Read-only boot
+  header at `/dev/block/by-name/boot_a` is `ANDROID!`, kernel size
+  exactly **44,431,872 bytes**. A stream of the kernel bytes
+  beginning 4096 bytes into the boot partition, SHA-256 only
+  (no boot/kernel bytes uploaded), matched the Actions Image hash
+  **exactly**.
+- The running `/proc/version` build timestamp
+  **Wed Nov 11 02:50:08 CST** (China Standard Time: Nov 10
+  **18:50:08 UTC**) falls within the #233 job.
+
+Thus this is a **boot-verified counterexample** to any rule
+'`MODULE_LOAD_REJECTION` in `modules.load` implies Android bootloop':
+the exact candidate #233 kernel has successfully booted Android
+(`sys.boot_completed=1`) while `system_dlkm/bluetooth.ko`
+requires `sk_filter_trim_cap=0x553e24af` but #233 vmlinux
+exports `0x43eebd89`. With normal `CONFIG_MODVERSIONS=y`, this
+module would be rejected **if requested**, although the kernel
+and Android are operational.
+
+User reports connected Galaxy Watch7 and functional Bluetooth.
+Android implements the Bluetooth host stack in user space and uses
+a vendor Bluetooth HAL; it does not require `bluetooth.ko`
+(the separate Linux kernel Bluetooth protocol stack) for all
+Bluetooth operation.
+
+Read-only loaded-module inventory on booted #233:
+- **564 modules currently present** in `/proc/modules`.
+- **63/77** names in `system_dlkm/modules.load` currently loaded.
+- **14/77** not loaded, including `bluetooth`, `btbcm`,
+  `btqca`, `btsdio`, `hci_uart`, `hidp`, `rfcomm`.
+- `btbcm`, `btqca`, `btsdio`, `hci_uart`, `hidp`,
+  `rfcomm` statically depend on `bluetooth`, so absent dependents
+  are consistent with (not proof of) the Bluetooth kernel module
+  load being unavailable. `btpower`, `rfkill`,
+  `mac80211`, `cfg80211`, and `libarc4` are loaded.
+- Boot-time kernel log entries have already rotated out: earliest
+  current `dmesg` timestamp ~128,673 s at uptime ~145,301 s.
+  The original module-loading attempt and its error were **not
+  observed**. Do not assert a historical attempt occurred.
+- `bluetooth.ko` `vermagic` reports the firmware GKI release
+  `6.6.144-4k-gacb4c5815254`; multiple other stock GKI
+  modules load on the custom `uname -r`, consistent with
+  MODVERSIONS handling of release tags.
+
+**Guard design implication:** An independently confirmed module
+compatibility failure is important, but **must be ranked separately
+from boot viability**. Keep the module CRC failure visible even
+when empirical boot success proves it is not fatal in this
+configuration. Do not use force-loading, `insmod`, SELinux
+relaxation or speculative flashing to recreate a load failure.
+
+The boot partition was only **read**, and only a SHA-256 was
+transmitted off-device. The raw running boot image and private
+device data were not committed.
+
 ## Running OnePlus 13 BTF: complete five-structure surface audit (13 Nov 2026)
 
 The owner reran the read-only BTF collector after the duplicate-ID fix.
