@@ -49,10 +49,10 @@ run_bounded() {
 run_bounded 90s olddefconfig || fail "isolated olddefconfig did not complete"
 grep -qx '# CONFIG_BPF_STREAM_PARSER is not set' "$ALT/.config" ||
   fail "Kconfig did not resolve BPF_STREAM_PARSER to n"
-# A/B comparison is interpretable only when this is the sole effective
-# Kconfig change. Record all dependent/automatic changes as confounders.
-python3 - "$MAIN/.config" "$ALT/.config" "$EVIDENCE/bpf-stream-parser-ab-config-diff.json" <<'PY'
-import json,sys
+# Distinguish direct user-controlled config toggles from a *verified*
+# Kconfig-selected dependency. Any other change is a confounder.
+python3 - "$MAIN/.config" "$ALT/.config" "$EVIDENCE/bpf-stream-parser-ab-config-diff.json" "$SOURCE/net/Kconfig" <<'PY'
+import json,re,sys
 from pathlib import Path
 def read(path):
     result={}
@@ -68,11 +68,27 @@ before,after=read(sys.argv[1]),read(sys.argv[2])
 diff={k:{"before":before.get(k),"after":after.get(k)}
       for k in sorted(before.keys()|after.keys())
       if before.get(k)!=after.get(k)}
+source=Path(sys.argv[4]).read_text()
+section=re.search(r'(?ms)^config BPF_STREAM_PARSER\s*\n(.*?)(?=^config |\Z)',source)
+selects_stream=bool(section and re.search(r'(?m)^\s*select STREAM_PARSER\s*$',section.group(1)))
+requested=(diff.get("CONFIG_BPF_STREAM_PARSER")=={"before":"y","after":"n"})
+stream=diff.get("CONFIG_STREAM_PARSER")
+auto_drop=(selects_stream and stream is not None and
+           stream.get("before")=="y" and stream.get("after") in (None,"n"))
+allowed={"CONFIG_BPF_STREAM_PARSER"}
+if auto_drop:
+    allowed.add("CONFIG_STREAM_PARSER")
+only_expected=requested and set(diff).issubset(allowed)
 Path(sys.argv[3]).write_text(json.dumps({
-    "schema_version":1,"kconfig_diffs":diff,
+    "schema_version":1,
+    "kconfig_diffs":diff,
+    "source_bpf_selects_stream_parser":selects_stream,
+    "derived_stream_parser_dropped":auto_drop,
     "only_requested_kconfig_changed":list(diff)==["CONFIG_BPF_STREAM_PARSER"],
+    "only_expected_kconfig_changes":only_expected,
 },indent=2)+"\n")
-print("A/B effective Kconfig differences:",len(diff))
+print("A/B effective Kconfig differences:",len(diff),
+      "only expected changes:",only_expected)
 PY
 run_bounded 120s prepare || fail "isolated kernel prepare did not complete"
 run_bounded 180s KBUILD_SYMTYPES=1 net/core/filter.o ||
@@ -92,7 +108,7 @@ import json,sys
 from pathlib import Path
 w=Path(sys.argv[1]); variant=sys.argv[2].lower()
 config_delta=json.loads(Path(sys.argv[4]).read_text())
-only_one=config_delta["only_requested_kconfig_changed"]
+only_expected=config_delta["only_expected_kconfig_changes"]
 symvers=(w/'kout/vmlinux.symvers').read_text()
 base=None
 for row in symvers.splitlines():
@@ -114,7 +130,7 @@ baseline_reproduced=(base==booted_233_crc)
 result={
     'schema_version':1,
     'status': ('BASELINE_NOT_REPRODUCED' if not baseline_reproduced
-               else 'CONFOUNDED_ADDITIONAL_KCONFIG_CHANGES' if not only_one
+               else 'CONFOUNDED_ADDITIONAL_KCONFIG_CHANGES' if not only_expected
                else 'CRC_RESTORED_TO_REFERENCE' if expected and variant==expected
                else 'CRC_DIFFERENCE_PERSISTS'),
     'reference_stg_crc':expected,
@@ -123,7 +139,10 @@ result={
     'baseline_reproduced':baseline_reproduced,
     'experimental_parser_off_crc':variant,
     'experiment':'requested CONFIG_BPF_STREAM_PARSER y -> n in isolated Kconfig',
-    'only_requested_kconfig_changed':only_one,
+    'only_requested_kconfig_changed':config_delta['only_requested_kconfig_changed'],
+    'only_expected_kconfig_changes':only_expected,
+    'derived_stream_parser_dropped':config_delta['derived_stream_parser_dropped'],
+    'source_bpf_selects_stream_parser':config_delta['source_bpf_selects_stream_parser'],
     'effective_kconfig_changes':config_delta['kconfig_diffs'],
     'image_modified':False,
     'device_modified':False,
