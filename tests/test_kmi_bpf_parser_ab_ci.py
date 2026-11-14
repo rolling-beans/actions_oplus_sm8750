@@ -115,6 +115,21 @@ class BPFParserABTests(unittest.TestCase):
             self.assertEqual((root / "kout/Image").read_bytes(),
                              b"original-kernel-image")
 
+    def test_new_run_baseline_drift_does_not_claim_causality(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mockbin = self.create_workspace(root)
+            path = root / "kout/vmlinux.symvers"
+            path.write_text(path.read_text().replace("0x43eebd89", "0xabc12345"))
+            result = self.run_script(root, mockbin)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads((root / "kmi-evidence/bpf-stream-parser-ab.json")
+                                .read_text())
+            self.assertEqual(report["status"], "BASELINE_NOT_REPRODUCED")
+            self.assertFalse(report["baseline_reproduced"])
+            self.assertEqual(report["booted_233_kernel_crc"], "0x43eebd89")
+            self.assertFalse(report["image_modified"])
+
     def test_missing_primary_config_stays_unverified_and_nonblocking(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
