@@ -32,7 +32,7 @@ class BPFParserABTests(unittest.TestCase):
             "# CONFIG_BPF_STREAM_PARSER is not set/' \"$2\"\n"
         )
         config.chmod(0o755)
-        abi = common_scripts.parent.parent / "android"
+        abi = common_scripts.parent / "android"
         abi.mkdir()
         (abi / "abi_gki_aarch64.stg").write_text(
             'elf_symbol {\n name: "sk_filter_trim_cap"\n'
