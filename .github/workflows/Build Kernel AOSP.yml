@@ -20,6 +20,11 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      kmi_symtypes_probe:
+        description: 'Experimental read-only genksyms closure for sk_filter_trim_cap (adds build evidence, not changes Image)'
+        required: false
+        type: boolean
+        default: false
       ksu_type:
         description: 'KernelSU variant'
         required: false
@@ -1269,6 +1274,471 @@ jobs:
             kernel-config-diagnostics.md
           if-no-files-found: warn
           retention-days: 14
+      - name: 🔬 Experimental sk_filter_trim_cap genksyms evidence
+        if: inputs.kmi_symtypes_probe == true
+        shell: bash
+        run: |
+          # This target only preprocesses net/core/filter.c and runs genksyms
+          # against the already built kernel tree; it does not relink Image.
+          set -euo pipefail
+          WORKDIR="$GITHUB_WORKSPACE"
+          EVIDENCE="$WORKDIR/kmi-evidence"
+          mkdir -p "$EVIDENCE"
+          export PATH="$WORKDIR/kernel_workspace/clang-r563880c/bin:$WORKDIR/kernel_workspace/build-tools/linux-x86/bin:$PATH"
+          export MAP="-fdebug-prefix-map=${WORKDIR}=. -fmacro-prefix-map=${WORKDIR}=. -ffile-prefix-map=${WORKDIR}=."
+          printf '%s\n' 'KMI symtypes capture: beginning target-specific genksyms preprocessor run'
+          set +e
+          timeout 180s make -C "$WORKDIR/kernel_workspace/common" -j2 \
+            LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="ccache clang" O="$WORKDIR/kout" KBUILD_SYMTYPES=1 \
+            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option ${AFDO_CFLAGS:-} ${EXTRA_CFLAGS:-} ${MAP}" \
+            net/core/filter.symtypes > "$EVIDENCE/filter-symtypes-build.log" 2>&1
+          capture_rc=$?
+          set -e
+          SOURCE_SYMTYPES="$WORKDIR/kout/net/core/filter.symtypes"
+          if [ "$capture_rc" -eq 0 ] && [ -s "$SOURCE_SYMTYPES" ]; then
+            cp "$SOURCE_SYMTYPES" "$EVIDENCE/filter.symtypes"
+            python3 "$WORKDIR/kmi-tools/scripts/kmi_symtypes_closure.py" \
+              --symtypes "$EVIDENCE/filter.symtypes" \
+              --symbol sk_filter_trim_cap \
+              --output "$EVIDENCE/sk_filter_trim_cap-symtypes.json" || true
+            grep -F 
+        shell: bash
+        env:
+          KMI_MODE: ${{ vars.KMI_GUARD_MODE || 'audit' }}
+        run: |
+          set -euo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/kmi-evidence"
+          mkdir -p "$EVIDENCE"
+          SYMVERS="$GITHUB_WORKSPACE/kout/vmlinux.symvers"
+          if [ ! -s "$SYMVERS" ] && [ -s "$GITHUB_WORKSPACE/kout/Module.symvers" ]; then
+            SYMVERS="$GITHUB_WORKSPACE/kout/Module.symvers"
+          fi
+          if [ ! -s "$SYMVERS" ]; then
+            echo "::error title=KMI evidence missing::No vmlinux.symvers / Module.symvers"
+            exit 2
+          fi
+          cp "$SYMVERS" "$EVIDENCE/vmlinux.symvers"
+          cp "$GITHUB_WORKSPACE/kout/.config" "$EVIDENCE/kernel.config"
+
+          # Diagnostic only. Full STG comparison requires an approved reference ABI.
+          LAYOUTS="$EVIDENCE/type-layouts.txt"
+          VMLINUX="$GITHUB_WORKSPACE/kout/vmlinux"
+          if [ -s "$VMLINUX" ]; then
+            # Use embedded BTF rather than repeatedly parsing the full DWARF tree.
+            # Diagnostic only: timeouts must not block CRC module-load checks.
+            if ! timeout 45s pahole -F btf \
+                -C 'task_struct,cgroup,cfs_rq,rq,task_group' "$VMLINUX" \
+                > "$LAYOUTS" 2>"$EVIDENCE/pahole.stderr"; then
+              echo "BTF type layout snapshot UNAVAILABLE (not a KMI pass)" > "$LAYOUTS"
+            fi
+          else
+            echo "vmlinux missing: type layout analysis UNAVAILABLE" > "$LAYOUTS"
+          fi
+
+          # Provisional reference from Actions #233. It has NOT been boot-verified.
+          # This is an advisory type-layout comparison, never a bootability PASS.
+          LAYOUT_REF_PROVISIONAL="$GITHUB_WORKSPACE/kmi-tools/kmi/provisional-reference-type-layouts-42877326850.txt"
+          LAYOUT_GUARD="$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_layout_diff.py"
+          if [ -f "$LAYOUT_REF_PROVISIONAL" ]; then
+            if ! python3 "$LAYOUT_GUARD" \
+                --reference "$LAYOUT_REF_PROVISIONAL" \
+                --candidate "$LAYOUTS" \
+                --report-json "$EVIDENCE/layout-diff.json" \
+                --report-md "$EVIDENCE/layout-diff.md"; then
+              echo "::warning title=KMI type layout unverified::Could not compare structures; check layout-diff artifact"
+            fi
+            cat "$EVIDENCE/layout-diff.md" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=Provisional BTF baseline::Layout comparison uses a NOT BOOT-VERIFIED reference (#233)"
+          fi
+
+          # A reference captured from /sys/kernel/btf/vmlinux on a known
+          # booting device may be provided later. This is ADVISORY: no
+          # changes to mandatory CRC/enforce behavior.
+          LIVE_REF="$GITHUB_WORKSPACE/kmi-tools/kmi/booted-kernel-btf.json"
+          if [ -s "$LIVE_REF" ]; then
+            echo "::notice title=Live BTF reference present::Comparing five monitored structure layouts"
+            if ! python3 "$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_compare_live_btf.py" \
+                --live-json "$LIVE_REF" \
+                --candidate-layouts "$LAYOUTS" \
+                --report-json "$EVIDENCE/live-btf-diff.json" \
+                --report-md "$EVIDENCE/live-btf-diff.md"; then
+              echo "::warning title=Live BTF comparison unverified::See live-btf-diff artifact"
+            fi
+            cat "$EVIDENCE/live-btf-diff.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n' '{"schema_version":1,"status":"UNVERIFIED","reason":"No boot-verified live BTF reference supplied; provisional BTF is advisory only","guaranteed_android_boot_failure":false}' > "$EVIDENCE/live-btf-diff.json"
+            echo "::notice title=No boot-verified BTF reference::Live type layout check is UNVERIFIED"
+          fi
+
+          GUARD="$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_guard.py"
+          args=(audit
+            --symvers "$SYMVERS"
+            --config "$GITHUB_WORKSPACE/kout/.config"
+            --mode "$KMI_MODE"
+            --report-json "$EVIDENCE/report.json"
+            --report-md "$EVIDENCE/report.md")
+          MANIFEST="$GITHUB_WORKSPACE/kmi-tools/kmi/vendor-manifest.json"
+          APPROVAL="$GITHUB_WORKSPACE/kmi-tools/kmi/approved-vendor-manifest.json"
+          BASELINE="$GITHUB_WORKSPACE/kmi-tools/kmi/reference-vmlinux.symvers"
+          LAYOUT_REF="$GITHUB_WORKSPACE/kmi-tools/kmi/reference-type-layouts.txt"
+          if [ -s "$MANIFEST" ]; then args+=(--vendor-manifest "$MANIFEST"); fi
+          if [ -s "$APPROVAL" ]; then args+=(--approved-manifest "$APPROVAL"); fi
+          if [ -s "$BASELINE" ]; then args+=(--baseline-symvers "$BASELINE"); fi
+          if [ -s "$LAYOUT_REF" ]; then
+            args+=(--baseline-layouts "$LAYOUT_REF" --candidate-layouts "$LAYOUTS")
+          fi
+
+          set +e
+          python3 "$GUARD" "${args[@]}"
+          rc=$?
+          set -e
+          if [ -s "$EVIDENCE/report.md" ]; then
+            cat "$EVIDENCE/report.md" >> "$GITHUB_STEP_SUMMARY"
+            if grep -q 'Status: UNVERIFIED' "$EVIDENCE/report.md"; then
+              echo "::warning title=KMI unverified::No proven device vendor-module baseline; do not interpret a successful build as KMI-compatible"
+            fi
+          fi
+          exit "$rc"
+
+      - name: 📤 Upload KMI Guard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmi-guard-${{ github.run_id }}
+          path: kmi-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: 🧩 Build Kasumi LKM
+        if: inputs.ksumi_lkm
+        run: |
+          set -e
+          cd $GITHUB_WORKSPACE/kernel_workspace
+
+          echo "📦 Cloning Kasumi..."
+          rm -rf kasumi
+          git clone --depth=1 https://github.com/Rouyashiki/Kasumi.git kasumi
+
+          echo "🔧 Preparing the same AOSP toolchain used for the 6.6.143 kernel..."
+          export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/linux-x86/bin:$PATH"
+          CLANG_DIR="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin"
+          echo "Clang: $($CLANG_DIR/clang --version | head -n 1)"
+          echo "LLD:   $($CLANG_DIR/ld.lld --version | head -n 1)"
+
+          # Each GitHub Actions step has its own shell, so the ld-wrapper
+          # created by the kernel build step is not guaranteed to exist here.
+          cat > "$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper" <<'EOF'
+          #!/bin/bash
+          exec ld.lld "$@" --thinlto-cache-dir=$LDCACHE_DIR --thinlto-jobs=$(($(nproc --all) / 2))
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper"
+
+          # The Image build may leave generated ARM64 UAPI wrapper headers in
+          # the source tree (arch/arm64/include/generated). Linux 6.6 refuses
+          # modules_prepare when this source-tree path exists. It was absent
+          # after source extraction, so remove only this generated directory.
+          echo "🧹 Removing generated ARM64 headers from source tree..."
+          rm -rf "$GITHUB_WORKSPACE/kernel_workspace/common/arch/arm64/include/generated"
+
+          # Prepare the output tree for an external module; Linux 6.6 generates
+          # scripts/module.lds through modules_prepare, required by the final link.
+          echo "🔧 Preparing kernel tree for external modules..."
+          make -C common \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC="ccache clang" \
+            O=$GITHUB_WORKSPACE/kout \
+            modules_prepare
+
+          if [ ! -s "$GITHUB_WORKSPACE/kout/scripts/module.lds" ]; then
+            echo "::error::kout/scripts/module.lds was not generated by modules_prepare"
+            exit 1
+          fi
+
+          # The kernel workflow does not build in-tree modules, so the external
+          # module's Module.symvers is absent. vmlinux.symvers is generated
+          # during the vmlinux link and contains the exported kernel symbols
+          # required by modpost for Kasumi.
+          if [ ! -s "$GITHUB_WORKSPACE/kout/Module.symvers" ]; then
+            if [ ! -s "$GITHUB_WORKSPACE/kout/vmlinux.symvers" ]; then
+              echo "::error::Neither kout/Module.symvers nor kout/vmlinux.symvers exists"
+              exit 1
+            fi
+            cp "$GITHUB_WORKSPACE/kout/vmlinux.symvers" \
+               "$GITHUB_WORKSPACE/kout/Module.symvers"
+            echo "✅ Prepared kout/Module.symvers from kout/vmlinux.symvers"
+          fi
+
+          echo "🔧 Building Kasumi against the prepared 6.6.143 kernel..."
+          set -o pipefail
+          make -C common \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC="ccache clang" \
+            LD="$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper" \
+            HOSTLD="$GITHUB_WORKSPACE/kernel_workspace/ld-wrapper" \
+            O=$GITHUB_WORKSPACE/kout \
+            M=$GITHUB_WORKSPACE/kernel_workspace/kasumi/src \
+            modules 2>&1 | tee -a /tmp/kasumi-kbuild.log
+
+          KASUMI_KO="$GITHUB_WORKSPACE/kernel_workspace/kasumi/src/kasumi_lkm.ko"
+          if [ ! -f "$KASUMI_KO" ]; then
+            echo "::error::Kasumi module was not produced: $KASUMI_KO"
+            find "$GITHUB_WORKSPACE/kernel_workspace/kasumi/src" -maxdepth 1 -type f -name '*.ko' -print
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/kasumi-artifact"
+          cp "$KASUMI_KO" "$GITHUB_WORKSPACE/kasumi-artifact/kasumi_lkm.ko"
+          cp "$GITHUB_WORKSPACE/kernel_workspace/kasumi/src/Module.symvers" "$GITHUB_WORKSPACE/kasumi-artifact/" 2>/dev/null || true
+
+          echo "✅ Kasumi LKM built successfully:"
+          ls -lh "$GITHUB_WORKSPACE/kasumi-artifact/"
+          file "$GITHUB_WORKSPACE/kasumi-artifact/kasumi_lkm.ko"
+
+      - name: 📦 Save New CCache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ env.CCACHE_KEY }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: 📦 Save LTO CCache
+        if: success() && inputs.lto_type == 'thin'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.LDCACHE_DIR }}
+          key: lto-cache-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: 🧠 Package AK3 ZIP
+        id: create_zip
+        run: |
+          cd kernel_workspace
+          git clone https://github.com/palazik/AnyKernel3 --depth=1
+          rm -rf ./AnyKernel3/.git
+          cd AnyKernel3
+          cp $GITHUB_WORKSPACE/kout/arch/arm64/boot/Image ./Image
+          if [[ ! -f ./Image ]]; then
+            echo "Kernel Image not found, build may have failed."
+            exit 1
+          fi
+          case "${{ inputs.ksu_type }}" in
+            "SukiSU Ultra") KSU_TYPENAME="SukiSU-Ultra" ;;
+            "KernelSU Next") KSU_TYPENAME="KSUNext" ;;
+            *) KSU_TYPENAME="${{ inputs.ksu_type }}" ;;
+          esac
+          if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
+            wget https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip || true
+          fi
+          AK3_NAME=AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_FULL_VERSION }}_palaziks_AOSP-ShiftPorts.zip
+          FULL_VERSION=${{ env.KERNEL_FULL_VERSION }}-palaziks_AOSP-ShiftPorts
+          zip -r ../$AK3_NAME ./*
+          echo "ak3name=$AK3_NAME" >> $GITHUB_OUTPUT
+
+          TIME_NOW="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
+          echo "Author: $GITHUB_ACTOR" > ./ak3.log
+          echo "Repo: $GITHUB_REPOSITORY" >> ./ak3.log
+          echo "Branch: $GITHUB_REF_NAME" >> ./ak3.log
+          echo "Run ID: $GITHUB_RUN_ID" >> ./ak3.log
+          echo "Commit: $GITHUB_SHA" >> ./ak3.log
+          echo "Time: $TIME_NOW" >> ./ak3.log
+          echo "Kernel Ver: $FULL_VERSION" >> ./ak3.log
+          echo "KSU Branch: ${KSU_TYPENAME}" >> ./ak3.log
+          echo "KSU Ver: ${KSUVER}" >> ./ak3.log
+          echo "SuSFS: ${{ github.event.inputs.SUSFS }}" >> ./ak3.log
+          echo "LZ4: ${{ github.event.inputs.lz4_enable }}" >> ./ak3.log
+          echo "LZ4KD: ${{ github.event.inputs.lz4kd_enable }}" >> ./ak3.log
+          echo "BBR&Brutal: ${{ github.event.inputs.bbr_enable }}" >> ./ak3.log
+          echo "BBRv3: true (stock)" >> ./ak3.log
+          echo "ADIOS: ${{ github.event.inputs.adios_enable }}" >> ./ak3.log
+          echo "Re-Kernel: ${{ github.event.inputs.rekernel_enable }}" >> ./ak3.log
+          echo "BBG: ${{ github.event.inputs.baseband_guard }}" >> ./ak3.log
+          echo "NTSync: ${{ github.event.inputs.ntsync_enable }}" >> ./ak3.log
+          echo "Droidspaces: ${{ github.event.inputs.droidspaces_enable }}" >> ./ak3.log
+          if [ -f "$GITHUB_WORKSPACE/kmi-evidence/report.json" ]; then
+            echo "KMI Guard: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$GITHUB_WORKSPACE/kmi-evidence/report.json")" >> ./ak3.log
+          fi
+          echo "IP_SET+IPv6NAT: ${{ github.event.inputs.ip_set_enable }}" >> ./ak3.log
+          echo "TTL: ${{ github.event.inputs.ttl_enable }}" >> ./ak3.log
+          echo "MemOpt: ${{ github.event.inputs.mem_opt_patches }}" >> ./ak3.log
+          echo "BORE: ${{ github.event.inputs.bore_enable }}" >> ./ak3.log
+          zip -z ../$AK3_NAME < ./ak3.log
+
+      - name: 📤 Upload Kasumi LKM
+        if: inputs.ksumi_lkm
+        uses: actions/upload-artifact@v4
+        with:
+          name: kasumi-lkm-${{ env.KERNEL_FULL_VERSION }}
+          path: |
+            ${{ github.workspace }}/kasumi-artifact/kasumi_lkm.ko
+            ${{ github.workspace }}/kasumi-artifact/Module.symvers
+
+      - name: 📤 Upload AnyKernel3
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.create_zip.outputs.ak3name }}
+          path: ${{ github.workspace }}/kernel_workspace/AnyKernel*.zip
+
+      - name: 📝 Make ZRAM module
+        run: |
+          ZRAM_KO=$(find $GITHUB_WORKSPACE/kout -name "zram.ko" | head -1)
+          if [ -z "$ZRAM_KO" ]; then
+            echo "⚠️ zram.ko not found, skipping"
+            exit 0
+          fi
+          curl -L "https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/zram.zip" -o zram.zip
+          unzip -q zram.zip -d zram
+          find zram -name "zram.ko" -exec cp "$ZRAM_KO" {} \;
+          rm -f zram.zip
+          echo "✅ Done!"
+
+      - name: 📤 Upload zram.zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: zram-module
+          path: ./zram/*
+
+      - name: Send Telegram Notification (Success)
+        if: success()
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          DATE=$(date +"%Y-%m-%d %H:%M:%S %Z")
+          COMMIT_HASH=$(echo "${{ github.sha }}" | cut -c1-8)
+          COMMIT_MSG="Workflow Dispatch: ${{ env.KERNEL_FULL_VERSION }}"
+          REPO_URL="https://github.com/${{ github.repository }}"
+          TIME_NOW="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
+
+
+          CAPTION="✅ <b>Kernel Build Successful!</b>
+
+          📱 <b>Device:</b> <code>OnePlus 13 AOSP</code>
+          ⚡ <b>KSU:</b> <code>${{ inputs.ksu_type }}</code>
+          📅 <b>Date:</b> $DATE
+          📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
+          🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/${{ github.sha }}\">$COMMIT_HASH</a>
+          🔧 <b>Kernel features:</b> see workflow configuration"
+
+          ZIP_PATH=$(ls ${{ github.workspace }}/kernel_workspace/AnyKernel*.zip | head -n 1)
+          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendDocument" \
+            -F chat_id="$TELEGRAM_CHAT_ID" \
+            -F document="@$ZIP_PATH" \
+            -F caption="$CAPTION" \
+            -F parse_mode="HTML"
+
+      - name: Send Telegram Notification (Failure)
+        if: failure()
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          DATE=$(date +"%Y-%m-%d %H:%M:%S %Z")
+          COMMIT_MSG="Workflow Dispatch: ${{ env.KERNEL_FULL_VERSION }}"
+          REPO_URL="https://github.com/${{ github.repository }}"
+          CAPTION="❌ <b>Kernel Build Failed!</b>
+
+          📱 <b>Device:</b> <code>OnePlus 13 AOSP</code>
+          ⚡ <b>KSU:</b> <code>${{ inputs.ksu_type }}</code>
+          📅 <b>Date:</b> $DATE
+          📝 <b>Commit:</b> <code>$COMMIT_MSG</code>
+          🔢 <b>Hash:</b> <a href=\"$REPO_URL/commit/${{ github.sha }}\">$(echo "${{ github.sha }}" | cut -c1-8)</a>"
+
+          if [ -s /tmp/kbuild.log ]; then
+            tail -n 3000 /tmp/kbuild.log > /tmp/kbuild_tail.log
+            curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendDocument" \
+              -F chat_id="$TELEGRAM_CHAT_ID" \
+              -F document="@/tmp/kbuild_tail.log" \
+              -F caption="$CAPTION" \
+              -F parse_mode="HTML"
+          else
+            curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \
+              -d chat_id="$TELEGRAM_CHAT_ID" \
+              -d text="$CAPTION" \
+              -d parse_mode="HTML"
+          fi
+
+  release:
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+
+    steps:
+      - name: Download ZIP Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.ak3name }}
+          path: ./release_zips
+
+      - name: Set Environment Variables
+        run: |
+          FULL_VERSION=${{ env.KERNEL_FULL_VERSION }}-palaziks_AOSP-ShiftPorts
+          echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
+          TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
+          TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
+          echo "TIME=$TIME" >> $GITHUB_ENV
+          echo "TIME_FORM=$TIME_FORM" >> $GITHUB_ENV
+          TAG_HEAD="OPPO-OPlus-Realme-build"
+          echo "TAG_HEAD=$TAG_HEAD" >> $GITHUB_ENV
+          echo "KSU_TYPENAME=${{ inputs.ksu_type }}" >> $GITHUB_ENV
+
+      - name: Create Release
+        if: ${{ github.event.inputs.github_release == 'true' }}
+        id: create_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat << 'EOF' > release_notes.md
+          ### 📱 OnePlus 13 ${{ inputs.ksu_type }} SM8750 AOSP Clang
+          > ⚠️ **ROM Compatibility:** Built with **AOSP Clang** for **AOSP-based ROMs** only. To flash on **ColorOS / OxygenOS**, run the `OP13 Kernel Build` workflow yourself (ZyCromerZ Clang builds are for ColorOS / OxygenOS only).
+
+          - **Kernel Version:** ${{ env.FULL_VERSION }}
+          - **Build Time:** ${{ env.TIME_FORM }}
+          - **KSU Branch:** ${{ inputs.ksu_type }}
+          - **SuSFS:** ${{ github.event.inputs.SUSFS }}
+          - **NTSync:** ${{ github.event.inputs.ntsync_enable }}
+          - **Droidspaces:** ${{ github.event.inputs.droidspaces_enable }}
+          - **IP_SET + IPv6 NAT:** ${{ github.event.inputs.ip_set_enable }}
+          - **TTL Target:** ${{ github.event.inputs.ttl_enable }}
+          - **Memory & Scheduler Optimizations:** ${{ github.event.inputs.mem_opt_patches }}
+          - **Multi-Manager:** true
+          - **LZ4:** ${{ github.event.inputs.lz4_enable }}
+          - **LZ4KD:** ${{ github.event.inputs.lz4kd_enable }}
+          - **BTF + eBPF + FUSE-BPF:** ${{ github.event.inputs.bpf_stack_enable }}
+          - **BBR/Brutal:** ${{ github.event.inputs.bbr_enable }}
+          - **BBRv3:** true (stock)
+          - **ADIOS IO:** ${{ github.event.inputs.adios_enable }}
+          - **Baseband Guard:** ${{ github.event.inputs.baseband_guard }}
+          - **Fengchi:** ${{ github.event.inputs.fengchi }}
+          - **Oryon CPU Optimizations:** ${{ github.event.inputs.cpu_opt }}
+          - **Unicode Fix:** true (stock)
+          - **BORE Scheduler:** ${{ github.event.inputs.bore_enable }}
+          - **WireGuard:** ${{ github.event.inputs.wireguard }}
+          - **LRNG v60:** ${{ github.event.inputs.lrng_enable }}
+          - **Wakelock Blocker:** ${{ github.event.inputs.wakelock_blocker }}
+          EOF
+
+          gh release create "${{ env.TAG_HEAD }}-${{ env.TIME }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ env.TAG_HEAD }}-${{ env.FULL_VERSION }}" \
+            --notes-file release_notes.md \
+            release_zips/AnyKernel3_*.zip
+\tsk_filter_trim_cap\t' "$WORKDIR/kout/vmlinux.symvers" \
+              > "$EVIDENCE/sk_filter_trim_cap.symvers" || true
+            echo "::notice title=genksyms evidence::Captured net/core/filter.symtypes in KMI evidence artifact"
+          else
+            echo "::warning title=genksyms unavailable::Optional probe failed (exit $capture_rc); see filter-symtypes-build.log; no kernel build impact"
+            printf '{"status":"UNVERIFIED","capture_exit_code":%d}\n' "$capture_rc" \
+              > "$EVIDENCE/sk_filter_trim_cap-symtypes.json"
+          fi
+
       - name: 🛡️ KMI Guard (deterministic module version checks)
         shell: bash
         env:
