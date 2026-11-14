@@ -255,6 +255,70 @@ lack vmlinux BTF, check the *running kernel's* Kconfig/build artifact
 before selecting a different reference source. A BTF-enabled `vmlinux`
 from a CI build is **not automatically boot-verified**.
 
+## Independently executed local genksyms A/B (14 Nov 2026 UTC)
+
+GitHub Actions dispatch was attempted through the `rolling-beans`
+account from the owner's KDE neon laptop. It returned **HTTP 422
+"Actions has been disabled for this repository"**, despite repository
+API reporting `enabled=true` / `allowed_actions=all`, administrator
+access, and an `active` workflow. No run was created. GitHub's
+documented platform-controlled disabled state is a plausible
+explanation, but its exact origin is not confirmed; changing the
+already enabled repository setting is **not** a validated fix.
+
+Instead, an **unprivileged, off-device genksyms experiment** ran
+in a new cache directory on the laptop's **native ext4 filesystem**
+(no NTFS, device, kernel, module, boot image or SELinux writes).
+Source is pinned to palazik commit
+`7c4d3772a8db0a7ba1f010ffe87fa9e5cfbd237b`, ZIP
+SHA-256 `1f810b2f389bf78400cced902f1a360f48922aed104d69b8f698cdef5696e5c6`.
+The effective kernel config was downloaded from #233's original
+Actions artifact. Local `olddefconfig` produced **100 differences**
+because the source lacks in-workflow KernelSU, SUSFS, LRNG and
+other patches, and the host uses **Clang 18.1.3**, not the
+original **Android Clang 21**. Thus the local *control* does
+**not** reproduce booted #233.
+
+| Symbol version source | `sk_filter_trim_cap` CRC |
+|---|---|
+| Original GKI STG reference | `0x553e24af` |
+| Boot-verified kernel Actions #233 | `0x43eebd89` |
+| Local Clang 18, `BPF_STREAM_PARSER=y` | **`0x60b3d1b6`** |
+| Local Clang 18, `BPF_STREAM_PARSER=n` | **`0xd742e2e0`** |
+
+Local A/B: same unpatched source, same compiler and locally
+resolved control Kconfig; two independent output directories,
+only `net/core/filter.o` built with `KBUILD_SYMTYPES=1`.
+Exactly two **resolved** Kconfig differences:
+`CONFIG_BPF_STREAM_PARSER=y→n` and the automatically selected
+`CONFIG_STREAM_PARSER=y→absent`. The latter is a direct
+dependency (`net/Kconfig` has `select STREAM_PARSER`).
+
+Actual `filter.symtypes` comparison:
+
+- Control: **1,216** records. Variant: **1,213**.
+- **Exactly one shared definition changed:** `s#sk_psock`.
+  It lost fields `strp`, `copied_seq`, `ingress_bytes`.
+- **Exactly three records disappeared:** `s#strp_callbacks`,
+  `s#strp_stats`, `s#strparser`. None were added.
+- The `sk_filter_trim_cap` declaration and the text records
+  `s#sock`, `s#proto`, `s#sk_buff` were unchanged.
+- Transitive **genksyms** dependency was verified on the
+  actual input dumps: `sk_filter_trim_cap → s#sock →
+  s#proto → s#sk_psock`.
+
+**Result: `LOCAL_AB_CONFIRMED_EFFECT_NOT_TARGET_BASELINE`.**
+Changing BPF_STREAM_PARSER (with its selected STREAM_PARSER
+dependency) **causes a CRC change in this local build**, through
+a specific genksyms type. It is not proof that toggling the
+option alone on exact #233 restores the required `0x553e24af`,
+since neither local CRC reproduces the target environment.
+
+Machine-readable, non-private aggregate evidence is committed in
+`kmi/local-bpf-stream-parser-ab-20261114.json`. The complete
+raw source-derived dumps and reports remain on the laptop;
+the currently working phone kernel has not been changed.
+
 ## Isolated CONFIG_BPF_STREAM_PARSER A/B plan and causality controls (14 Nov 2026)
 
 **New direct causal hypothesis**: changing `CONFIG_BPF_STREAM_PARSER`
@@ -301,11 +365,14 @@ Controlled test, **not yet run in a real GitHub Actions build**:
   booted #233 CRC `0x43eebd89`. If not, label the
   experiment `BASELINE_NOT_REPRODUCED`; unpinned upstream
   integration scripts could otherwise confound the result.
-- **Kconfig confounder gate:** independently diff every
-  effective Kconfig key before vs after `olddefconfig`.
-  If any key other than BPF_STREAM_PARSER changes, classify as
-  `CONFOUNDED_ADDITIONAL_KCONFIG_CHANGES`, not a
-  one-variable causal experiment, even if CRC matches.
+- **Kconfig confounder gate:** compare every effective Kconfig
+  key after `olddefconfig`. Allow the requested
+  `BPF_STREAM_PARSER=y→n` and the automatic loss of
+  `STREAM_PARSER` **only if `net/Kconfig` confirms
+  `BPF_STREAM_PARSER select STREAM_PARSER`**.
+  Any other change is `CONFOUNDED_ADDITIONAL_KCONFIG_CHANGES`.
+  This is a one-requested-option intervention, not
+  necessarily a one-effective-symbol change.
 - All results go to the KMI evidence artifact. An
   unavailable/failed experiment is `UNVERIFIED`, and
   never modifies the primary built Image, phone, modules,
