@@ -86,6 +86,35 @@ class BPFParserABTests(unittest.TestCase):
                           (root / "kmi-bpf-parser-off-output/.config").read_text())
             self.assertFalse(data["image_modified"])
 
+    def test_additional_effective_config_change_is_confounder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mockbin = self.create_workspace(root)
+            with (root / "kout/.config").open("a") as stream:
+                stream.write("CONFIG_CGROUPS=y\n")
+            # Simulate olddefconfig changing a second config option.
+            make = mockbin / "make"
+            script = make.read_text()
+            script = script.replace(
+                " if [ \"$x\" = \"net/core/filter.o\" ]; then",
+                " if [ \"$x\" = \"olddefconfig\" ]; then\n"
+                "  sed -i 's/^CONFIG_CGROUPS=y$/# CONFIG_CGROUPS is not set/' "
+                "\"$GITHUB_WORKSPACE/kmi-bpf-parser-off-output/.config\"\n"
+                " fi\n"
+                " if [ \"$x\" = \"net/core/filter.o\" ]; then"
+            )
+            make.write_text(script)
+            result = self.run_script(root, mockbin)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads((root / "kmi-evidence/bpf-stream-parser-ab.json")
+                                .read_text())
+            self.assertEqual(report["status"],
+                             "CONFOUNDED_ADDITIONAL_KCONFIG_CHANGES")
+            self.assertFalse(report["only_requested_kconfig_changed"])
+            self.assertIn("CONFIG_CGROUPS", report["effective_kconfig_changes"])
+            self.assertEqual((root / "kout/Image").read_bytes(),
+                             b"original-kernel-image")
+
     def test_missing_primary_config_stays_unverified_and_nonblocking(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
