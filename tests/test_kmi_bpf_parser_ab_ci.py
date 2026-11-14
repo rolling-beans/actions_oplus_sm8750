@@ -32,6 +32,15 @@ class BPFParserABTests(unittest.TestCase):
             "# CONFIG_BPF_STREAM_PARSER is not set/' \"$2\"\n"
         )
         config.chmod(0o755)
+        net = common_scripts.parent / "net"
+        net.mkdir()
+        (net / "Kconfig").write_text(
+            "config BPF_STREAM_PARSER\n"
+            "    bool \"enable BPF stream parser\"\n"
+            "    select STREAM_PARSER\n\n"
+            "config OTHER_FEATURE\n"
+            "    bool \"unrelated\"\n"
+        )
         abi = common_scripts.parent / "android"
         abi.mkdir()
         (abi / "abi_gki_aarch64.stg").write_text(
@@ -48,6 +57,10 @@ class BPFParserABTests(unittest.TestCase):
         make.write_text(
             "#!/bin/sh\n"
             "for x in \"$@\"; do\n"
+            " if [ \"$x\" = \"olddefconfig\" ]; then\n"
+            "  sed -i 's/^CONFIG_STREAM_PARSER=y$/# CONFIG_STREAM_PARSER is not set/' "
+            "\"$GITHUB_WORKSPACE/kmi-bpf-parser-off-output/.config\"\n"
+            " fi\n"
             " if [ \"$x\" = \"net/core/filter.o\" ]; then\n"
             "  mkdir -p \"$GITHUB_WORKSPACE/kmi-bpf-parser-off-output/net/core\"\n"
             "  echo '#SYMVER sk_filter_trim_cap 0x553e24af' > "
@@ -85,6 +98,22 @@ class BPFParserABTests(unittest.TestCase):
             self.assertIn("# CONFIG_BPF_STREAM_PARSER is not set",
                           (root / "kmi-bpf-parser-off-output/.config").read_text())
             self.assertFalse(data["image_modified"])
+
+    def test_kconfig_selected_stream_parser_drop_is_expected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mockbin = self.create_workspace(root)
+            with (root / "kout/.config").open("a") as stream:
+                stream.write("CONFIG_STREAM_PARSER=y\n")
+            result = self.run_script(root, mockbin)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads((root / "kmi-evidence/bpf-stream-parser-ab.json")
+                                .read_text())
+            self.assertEqual(report["status"], "CRC_RESTORED_TO_REFERENCE")
+            self.assertTrue(report["derived_stream_parser_dropped"])
+            self.assertTrue(report["only_expected_kconfig_changes"])
+            self.assertFalse(report["only_requested_kconfig_changed"])
+            self.assertIn("CONFIG_STREAM_PARSER", report["effective_kconfig_changes"])
 
     def test_additional_effective_config_change_is_confounder(self):
         with tempfile.TemporaryDirectory() as tmp:
