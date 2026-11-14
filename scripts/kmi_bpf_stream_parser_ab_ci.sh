@@ -90,7 +90,7 @@ Path(sys.argv[3]).write_text(json.dumps({
 print("A/B effective Kconfig differences:",len(diff),
       "only expected changes:",only_expected)
 PY
-run_bounded 120s prepare || fail "isolated kernel prepare did not complete"
+run_bounded 120s prepare scripts || fail "isolated kernel preparation and genksyms host tools did not complete"
 run_bounded 180s KBUILD_SYMTYPES=1 net/core/filter.o ||
   fail "isolated net/core/filter.o compilation did not complete"
 
