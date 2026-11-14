@@ -49,6 +49,31 @@ run_bounded() {
 run_bounded 90s olddefconfig || fail "isolated olddefconfig did not complete"
 grep -qx '# CONFIG_BPF_STREAM_PARSER is not set' "$ALT/.config" ||
   fail "Kconfig did not resolve BPF_STREAM_PARSER to n"
+# A/B comparison is interpretable only when this is the sole effective
+# Kconfig change. Record all dependent/automatic changes as confounders.
+python3 - "$MAIN/.config" "$ALT/.config" "$EVIDENCE/bpf-stream-parser-ab-config-diff.json" <<'PY'
+import json,sys
+from pathlib import Path
+def read(path):
+    result={}
+    for line in Path(path).read_text().splitlines():
+        if line.startswith("CONFIG_") and "=" in line:
+            key,value=line.split("=",1)
+            result[key]=value
+        elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
+            key=line[2:].split(" is not set")[0]
+            result[key]="n"
+    return result
+before,after=read(sys.argv[1]),read(sys.argv[2])
+diff={k:{"before":before.get(k),"after":after.get(k)}
+      for k in sorted(before.keys()|after.keys())
+      if before.get(k)!=after.get(k)}
+Path(sys.argv[3]).write_text(json.dumps({
+    "schema_version":1,"kconfig_diffs":diff,
+    "only_requested_kconfig_changed":list(diff)==["CONFIG_BPF_STREAM_PARSER"],
+},indent=2)+"\n")
+print("A/B effective Kconfig differences:",len(diff))
+PY
 run_bounded 120s prepare || fail "isolated kernel prepare did not complete"
 run_bounded 180s KBUILD_SYMTYPES=1 net/core/filter.o ||
   fail "isolated net/core/filter.o compilation did not complete"
@@ -62,10 +87,12 @@ awk '$1 == "#SYMVER" && $2 == "sk_filter_trim_cap" { print }' \
 [[ -f "$ALT/net/core/filter.symtypes" ]] &&
   cp "$ALT/net/core/filter.symtypes" "$EVIDENCE/filter-parser-off.symtypes" || true
 
-python3 - "$W" "$VARIANT_CRC" "$REPORT" <<'PY'
+python3 - "$W" "$VARIANT_CRC" "$REPORT" "$EVIDENCE/bpf-stream-parser-ab-config-diff.json" <<'PY'
 import json,sys
 from pathlib import Path
 w=Path(sys.argv[1]); variant=sys.argv[2].lower()
+config_delta=json.loads(Path(sys.argv[4]).read_text())
+only_one=config_delta["only_requested_kconfig_changed"]
 symvers=(w/'kout/vmlinux.symvers').read_text()
 base=None
 for row in symvers.splitlines():
@@ -82,12 +109,15 @@ expected=next(iter(original)).to_bytes(4,'big').hex() if len(original)==1 else N
 if expected:expected='0x'+expected
 result={
     'schema_version':1,
-    'status': ('CRC_RESTORED_TO_REFERENCE' if expected and variant==expected
+    'status': ('CONFOUNDED_ADDITIONAL_KCONFIG_CHANGES' if not only_one
+               else 'CRC_RESTORED_TO_REFERENCE' if expected and variant==expected
                else 'CRC_DIFFERENCE_PERSISTS'),
     'reference_stg_crc':expected,
     'compiled_kernel_crc':base,
     'experimental_parser_off_crc':variant,
-    'experiment':'only CONFIG_BPF_STREAM_PARSER toggled from y to n in isolated Kconfig',
+    'experiment':'requested CONFIG_BPF_STREAM_PARSER y -> n in isolated Kconfig',
+    'only_requested_kconfig_changed':only_one,
+    'effective_kconfig_changes':config_delta['kconfig_diffs'],
     'image_modified':False,
     'device_modified':False,
     'warning':'A matched CRC does not prove full structural KMI compatibility.',
