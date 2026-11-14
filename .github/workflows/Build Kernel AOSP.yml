@@ -252,57 +252,66 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-          echo "Downloading optional AFDO profile..."
-          AFDO_B64="$GITHUB_WORKSPACE/kernel.afdo.b64"
+          # Google GKI already publishes an extbinary sample profile.
+          # --prof_sym_list=false is a create_llvm_prof profile GENERATION option,
+          # not a Clang/LLD build flag. When generating a custom profile use:
+          # create_llvm_prof --profiler=text --binary=vmlinux --profile=kernel.autofdo \
+          #   --format=extbinary --use_fs_discriminator --out=kernel.afdo --prof_sym_list=false
+          # https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/README.md
+          #
+          # Fail closed instead of silently producing an unprofiled ThinLTO Image.
           AFDO_OUT="$GITHUB_WORKSPACE/kernel.afdo"
-          AFDO_CFLAGS=""
-
+          AFDO_B64="$GITHUB_WORKSPACE/kernel.afdo.b64"
           rm -f "$AFDO_B64" "$AFDO_OUT"
+          echo "AUTOFDO_PROFILE=" >> "$GITHUB_ENV"
 
-          AFDO_URL="https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT"
-          echo "Trying anonymous AFDO source: $AFDO_URL"
-
-          # AFDO is optional. A temporary outage of android.googlesource.com
-          # must never abort the kernel build.
-          AFDO_HTTP_STATUS=$(curl -sS -L \
-            --retry 3 \
-            --retry-all-errors \
-            --retry-delay 2 \
-            --connect-timeout 20 \
-            --max-time 180 \
-            -o "$AFDO_B64" \
-            -w '%{http_code}' \
-            "$AFDO_URL" || true)
-
-          echo "AFDO HTTP status: $AFDO_HTTP_STATUS"
-
-          if [ "$AFDO_HTTP_STATUS" = "200" ]; then
-            echo "AFDO encoded size: $(wc -c < "$AFDO_B64") bytes"
-
-            if tr -d '\r\n' < "$AFDO_B64" | base64 -d -i > "$AFDO_OUT" 2>/dev/null \
-              && test -s "$AFDO_OUT"; then
-              echo "AFDO decoded size: $(wc -c < "$AFDO_OUT") bytes"
-              AFDO_CFLAGS="-fprofile-sample-use=$AFDO_OUT"
-              echo "✅ AFDO downloaded successfully"
-            else
-              echo "❌ HTTP 200 received, but the response is not valid base64 AFDO data."
-              rm -f "$AFDO_OUT"
+          if [[ "${{ inputs.lto_type }}" == "thin" ]]; then
+            AFDO_URL="https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT"
+            echo "Downloading pre-generated Android GKI 6.6 AutoFDO sample profile..."
+            AFDO_HTTP_STATUS=$(curl -sS -L \
+              --retry 3 \
+              --retry-all-errors \
+              --retry-delay 2 \
+              --connect-timeout 20 \
+              --max-time 180 \
+              -o "$AFDO_B64" \
+              -w '%{http_code}' \
+              "$AFDO_URL" || true)
+            if [[ "$AFDO_HTTP_STATUS" != "200" ]]; then
+              echo "::error title=AutoFDO profile unavailable::HTTP $AFDO_HTTP_STATUS; refusing an unprofiled ThinLTO build"
+              exit 1
             fi
+
+            if ! tr -d '\r\n' < "$AFDO_B64" | base64 -d > "$AFDO_OUT" || [[ ! -s "$AFDO_OUT" ]]; then
+              echo "::error title=Invalid AutoFDO profile::Base64 decode failed or profile is empty"
+              exit 1
+            fi
+            rm -f "$AFDO_B64"
+            LLVM_PROFDATA="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin/llvm-profdata"
+            if [[ ! -x "$LLVM_PROFDATA" ]]; then
+              echo "::error title=Missing LLVM profiler::llvm-profdata not found in the AOSP Clang toolchain"
+              exit 1
+            fi
+            if ! "$LLVM_PROFDATA" show --sample "$AFDO_OUT" > "$GITHUB_WORKSPACE/autofdo-profile-summary.txt" 2>&1; then
+              echo "::error title=Invalid AutoFDO sample profile::llvm-profdata could not parse kernel.afdo"
+              cat "$GITHUB_WORKSPACE/autofdo-profile-summary.txt"
+              exit 1
+            fi
+
+            AFDO_SHA256=$(sha256sum "$AFDO_OUT" | cut -d ' ' -f1)
+            echo "AUTOFDO_PROFILE=$AFDO_OUT" >> "$GITHUB_ENV"
+            echo "AutoFDO profile validated (size $(wc -c < "$AFDO_OUT") bytes; SHA256 $AFDO_SHA256)"
+            {
+              echo "### AutoFDO profile"
+              echo "- Source: $AFDO_URL"
+              echo "- SHA256: $AFDO_SHA256"
+              echo "- Format: LLVM sample profile, checked with llvm-profdata"
+              echo "- Mode: AutoFDO + ThinLTO (native kernel Kbuild integration)"
+            } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "❌ AFDO download failed (HTTP $AFDO_HTTP_STATUS)."
-            rm -f "$AFDO_B64" "$AFDO_OUT"
+            echo "AutoFDO disabled: lto_type=${{ inputs.lto_type }}; only enabled with ThinLTO"
           fi
 
-          if [ -n "$AFDO_CFLAGS" ]; then
-            echo "AFDO_CFLAGS=$AFDO_CFLAGS" >> "$GITHUB_ENV"
-            echo "✅ AFDO enabled"
-          else
-            echo "AFDO_CFLAGS=" >> "$GITHUB_ENV"
-            echo "⚠️ AFDO unavailable; continuing without AFDO optimization"
-          fi
-          
-          rm -f "$AFDO_B64"
-          
           echo "Source and tools initialized successfully!"
 
       - name: Cache ccache-ECS binary
@@ -1095,6 +1104,14 @@ jobs:
             echo "CONFIG_LTO_CLANG_THIN=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
+          # scripts/Makefile.autofdo supplies compilation and ThinLTO linker flags.
+          if [[ "${{ inputs.lto_type }}" == "thin" ]]; then
+            test -s "$AUTOFDO_PROFILE" || { echo "::error::AutoFDO profile is missing"; exit 1; }
+            echo "CONFIG_AUTOFDO_CLANG=y" >> ./common/arch/arm64/configs/gki_defconfig
+          else
+            echo "# CONFIG_AUTOFDO_CLANG is not set" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
+
       - name: Configure ADIOS IO
         if: inputs.adios_enable
         run: |
@@ -1145,8 +1162,18 @@ jobs:
           set -o pipefail
           : > /tmp/kbuild.log
 
-          echo '#!/bin/bash' > ld-wrapper
-          echo 'ld.lld "$@" --thinlto-cache-dir=$LDCACHE_DIR --thinlto-jobs=$(($(nproc --all) / 2))' >> ld-wrapper
+          # Proof of the sample profile reaching LLD (flags are supplied by Kbuild).
+          cat > ld-wrapper <<'EOF'
+          #!/usr/bin/env bash
+          for arg in "$@"; do
+            case "$arg" in
+              --lto-sample-profile=*)
+                printf '%s\n' "$arg" >> "$GITHUB_WORKSPACE/kout/autofdo-linker-args.log"
+                ;;
+            esac
+          done
+          exec ld.lld "$@" --thinlto-cache-dir="$LDCACHE_DIR" --thinlto-jobs="$(($(nproc --all) / 2))"
+          EOF
           chmod +x ld-wrapper
 
           wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/lib/libfakestat.so || true
@@ -1181,6 +1208,7 @@ jobs:
             echo "| Symbol | Last request in gki_defconfig | Actual in .config |"
             echo "|---|---|---|"
             for symbol in \
+              LTO_NONE LTO_CLANG_FULL LTO_CLANG_THIN AUTOFDO_CLANG \
               SWAP ZRAM ZSMALLOC ZRAM_WRITEBACK ZRAM_MULTI_COMP EXT4_FS \
               HZ HZ_100 HZ_250 HZ_300 HZ_1000 NO_HZ_IDLE NO_HZ_FULL \
               NETWORK_FILESYSTEMS NFS_FS NFS_V2 NFS_V3 NFS_V3_ACL \
@@ -1222,11 +1250,34 @@ jobs:
             done
           fi
 
+          # Check the resolved configuration and pass the profile via the
+          # documented Kbuild variable, not via KCFLAGS.
+          AUTOFDO_MAKE_ARGS=()
+          if [[ "${{ inputs.lto_type }}" == "thin" ]]; then
+            grep -qx "CONFIG_LTO_CLANG_THIN=y" "$CFG" || { echo "::error::ThinLTO not enabled in resolved Kconfig"; exit 1; }
+            grep -qx "CONFIG_AUTOFDO_CLANG=y" "$CFG" || { echo "::error::AutoFDO not enabled in resolved Kconfig"; exit 1; }
+            test -s "$AUTOFDO_PROFILE" || { echo "::error::AutoFDO profile missing before Image build"; exit 1; }
+            AUTOFDO_MAKE_ARGS=("CLANG_AUTOFDO_PROFILE=$AUTOFDO_PROFILE")
+          elif grep -qx "CONFIG_AUTOFDO_CLANG=y" "$CFG"; then
+            echo "::error::AutoFDO unexpectedly enabled without ThinLTO"
+            exit 1
+          fi
+
           make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC="ccache clang" LD="$(pwd)/ld-wrapper" HOSTLD="$(pwd)/ld-wrapper" \
             O=$GITHUB_WORKSPACE/kout \
-            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option ${AFDO_CFLAGS:-} ${EXTRA_CFLAGS:-} ${MAP}" \
+            "${AUTOFDO_MAKE_ARGS[@]}" \
+            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option ${EXTRA_CFLAGS:-} ${MAP}" \
             Image 2>&1 | tee -a /tmp/kbuild.log
+
+          if [[ "${{ inputs.lto_type }}" == "thin" ]]; then
+            if ! grep -Fxq -- "--lto-sample-profile=$AUTOFDO_PROFILE" "$GITHUB_WORKSPACE/kout/autofdo-linker-args.log"; then
+              echo "::error title=AutoFDO link verification failed::LLD never received --lto-sample-profile"
+              exit 1
+            fi
+            echo "AutoFDO+ThinLTO verified: Kconfig enabled; LLD received the profile"
+            echo "- LLD received the AutoFDO sample profile at link time" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           echo "Kernel Compilation Complete!"
           ccache -c
@@ -1244,6 +1295,8 @@ jobs:
             kout/.config
             resolved-kernel.config
             kernel-config-diagnostics.md
+            autofdo-profile-summary.txt
+            kout/autofdo-linker-args.log
           if-no-files-found: warn
           retention-days: 14
       - name: 🧩 Build Kasumi LKM
