@@ -296,9 +296,14 @@ Controlled test, **not yet run in a real GitHub Actions build**:
 - Compare the isolated experimental CRC with
   original GKI STG `0x553e24af` and actual booted
   #233 `0x43eebd89`.
-- **Confounder gate:** independently diff every effective
-  Kconfig key before vs after `olddefconfig`.
-  If any other key changes, classify as
+- **Reproducibility gate:** require the new build's unchanged
+  control CRC for `sk_filter_trim_cap` to equal the exact
+  booted #233 CRC `0x43eebd89`. If not, label the
+  experiment `BASELINE_NOT_REPRODUCED`; unpinned upstream
+  integration scripts could otherwise confound the result.
+- **Kconfig confounder gate:** independently diff every
+  effective Kconfig key before vs after `olddefconfig`.
+  If any key other than BPF_STREAM_PARSER changes, classify as
   `CONFOUNDED_ADDITIONAL_KCONFIG_CHANGES`, not a
   one-variable causal experiment, even if CRC matches.
 - All results go to the KMI evidence artifact. An
