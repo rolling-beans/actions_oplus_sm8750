@@ -1279,6 +1279,11 @@ jobs:
         shell: bash
         run: bash "$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_capture_symtypes_ci.sh"
 
+      - name: 🧪 Isolated BPF_STREAM_PARSER KMI A/B CRC experiment
+        if: inputs.kmi_symtypes_probe == true
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_bpf_stream_parser_ab_ci.sh"
+
       - name: 🛡️ KMI Guard (deterministic module version checks)
         shell: bash
         env:
