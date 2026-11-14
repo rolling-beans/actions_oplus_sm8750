@@ -107,13 +107,20 @@ reference=kmi_stg_crc_diff.parse_stg(
 original=reference.get('sk_filter_trim_cap',set())
 expected=next(iter(original)).to_bytes(4,'big').hex() if len(original)==1 else None
 if expected:expected='0x'+expected
+# The source branch is stable but other unpinned build-time integrations
+# can drift: require the control to match the exact booted #233 CRC.
+booted_233_crc='0x43eebd89'
+baseline_reproduced=(base==booted_233_crc)
 result={
     'schema_version':1,
-    'status': ('CONFOUNDED_ADDITIONAL_KCONFIG_CHANGES' if not only_one
+    'status': ('BASELINE_NOT_REPRODUCED' if not baseline_reproduced
+               else 'CONFOUNDED_ADDITIONAL_KCONFIG_CHANGES' if not only_one
                else 'CRC_RESTORED_TO_REFERENCE' if expected and variant==expected
                else 'CRC_DIFFERENCE_PERSISTS'),
     'reference_stg_crc':expected,
     'compiled_kernel_crc':base,
+    'booted_233_kernel_crc':booted_233_crc,
+    'baseline_reproduced':baseline_reproduced,
     'experimental_parser_off_crc':variant,
     'experiment':'requested CONFIG_BPF_STREAM_PARSER y -> n in isolated Kconfig',
     'only_requested_kconfig_changed':only_one,
