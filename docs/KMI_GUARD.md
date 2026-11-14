@@ -255,6 +255,76 @@ lack vmlinux BTF, check the *running kernel's* Kconfig/build artifact
 before selecting a different reference source. A BTF-enabled `vmlinux`
 from a CI build is **not automatically boot-verified**.
 
+## Original STG CRC drift: 43 source KMI exports (14 Nov 2026)
+
+Investigation of `sk_filter_trim_cap` moved beyond module imports
+and into the source repository's **original KMI contract**.
+
+**Source provenance.** Actions #233 (2026-11-10, fully boot-verified
+by active phone boot_a Image SHA-256) downloaded the head of
+`palazik/android_kernel_common_oneplus_sm8750` branch
+`6.6.144_oneplus13_coloros16`. Public GitHub history identifies the
+branch head as commit `7c4d3772a8db0a7ba1f010ffe87fa9e5cfbd237b`,
+dated **2026-10-06**, unchanged at the build date.
+The source `net/core/filter.c`, `include/linux/filter.h`,
+`include/net/sock.h` and `include/linux/skbuff.h` are byte-for-byte
+identical to Google Android GKI tag `android15-6.6.144_r00`.
+The declared export is
+`int sk_filter_trim_cap(struct sock *, struct sk_buff *, unsigned int)`.
+This comparison checks source checkout, **not every subsequent build patch**.
+
+The pinned source includes a 7.7 MiB textual KMI reference
+`android/abi_gki_aarch64.stg`. In that reference the exported
+`sk_filter_trim_cap` has CRC `0x553e24af`, **exactly the
+requirement recorded in stock system_dlkm/bluetooth.ko**.
+The kernel's true #233 `vmlinux.symvers` has `0x43eebd89`.
+
+Running `scripts/kmi_stg_crc_diff.py` over the **full original STG
+reference** and **actual #233 vmlinux.symvers** produced:
+
+| STG/reference vs candidate export CRC | Count |
+|---|---:|
+| Source STG entries with CRC | 9,559 |
+| Candidate vmlinux exports | 17,424 |
+| Compared symbol names with matching CRC | 9,286 |
+| Compared symbol names with differing CRC | **43** |
+| Ambiguous STG symbol CRCs | 0 |
+
+Changed-CRC groups: **19** BPF/socket/XDP, **10** LZ4,
+**7** interconnect, **5** ZSTD, and **2** others (scheduler and
+disk randomness). This grouping is evidence of several independent
+ABI drift clusters. **STG CRC drift is not equivalent to module
+failure**: among 34,353 verified imports of 593 installed modules
+only one requires a mismatched CRC.
+
+**Cause not yet isolated.** The function prototype and four source
+files match the Android GKI tag, making a direct edit to that
+function an unsupported explanation. Candidate Kconfig selections,
+transitive headers, build-time patches or genksyms visibility may
+still change the versioned type graph. The original `.stg`
+encodes a function returning `int`, with `struct sock *` and
+`struct sk_buff *` parameters, matching the source prototype.
+The precise type or macro responsible remains unresolved.
+
+To capture next-stage evidence safely, a new *opt-in* manual
+workflow_dispatch input `kmi_symtypes_probe=true` generates
+`net/core/filter.symtypes` after compiling the kernel using the
+same source/output tree and a bounded 180-second make target.
+The separate helper `scripts/kmi_symtypes_closure.py` extracts
+the referenced type graph for `sk_filter_trim_cap` and records
+missing or ambiguous type descriptions. The probe is skipped by
+default, cannot change the built `Image` or loader behavior, and
+never suppresses mismatched CRCs. The normal KMI evidence job
+also now compares STG CRCs and stores the report.
+
+The staged workflow and all Python tests have been validated on
+the VPS. **A full GitHub Actions run of the new optional probe has
+not yet completed**; do not claim the exact `.symtypes` is captured.
+Additional source comparison is needed before proposing a patch,
+including checking whether any candidate structural change is
+real or just an input representation change. No `genksyms`
+CRC spoofing, module force-loading or phone flashing is authorized.
+
 ## Proven booted kernel image matches Actions #233 (13 Nov 2026)
 
 **The booted phone is proven to be running the exact candidate kernel
