@@ -255,6 +255,68 @@ lack vmlinux BTF, check the *running kernel's* Kconfig/build artifact
 before selecting a different reference source. A BTF-enabled `vmlinux`
 from a CI build is **not automatically boot-verified**.
 
+## Isolated CONFIG_BPF_STREAM_PARSER A/B plan and causality controls (14 Nov 2026)
+
+**New direct causal hypothesis**: changing `CONFIG_BPF_STREAM_PARSER`
+from the build's `y` to `n` removes three conditional
+`struct sk_psock` fields, reducing its layout from **808 bytes /
+30 members** to the **480 bytes / 27 members** captured in the
+original source STG KMI reference. The dependency of
+`sk_filter_trim_cap` on `struct sk_psock` exists indirectly:
+`sk_filter_trim_cap` -> `struct sock *` ->
+`sock.sk_prot_creator` -> `struct proto *` ->
+`proto.psock_update_sk_prot` -> callback prototype ->
+`struct sk_psock *`.
+This path was inspected independently in original STG and
+the exact booted kernel's embedded BTF.
+
+**Important competing explanation**: the source STG graph has many
+long transitive pointer paths. Of BPF/socket/XDP-related exported
+symbols in the reference whose CRCs can be compared,
+**19 with changed CRCs and 35 with unchanged CRCs** are
+both reachable from `sk_psock` by this graph. Reachability
+alone cannot establish causation; in particular, it is false
+to claim the structural `sk_psock` difference definitely
+caused all 19 CRC changes.
+
+Controlled test, **not yet run in a real GitHub Actions build**:
+
+- Enable manual workflow dispatch input
+  `kmi_symtypes_probe=true` (off by default).
+- Following the normal unchanged kernel Image build,
+  `kmi_capture_symtypes_ci.sh` records the original kernel
+  `net/core/filter.symtypes` and its `genksyms` closure.
+- `kmi_bpf_stream_parser_ab_ci.sh` copies the effective
+  built `kout/.config` to a fresh independent output directory,
+  requests `CONFIG_BPF_STREAM_PARSER=n`, calls
+  `olddefconfig`, `prepare` and compiles only
+  `net/core/filter.o` with `KBUILD_SYMTYPES=1`,
+  extracting `#SYMVER sk_filter_trim_cap` from the
+  generated `.filter.o.cmd`. Commands have bounded timeouts.
+- Compare the isolated experimental CRC with
+  original GKI STG `0x553e24af` and actual booted
+  #233 `0x43eebd89`.
+- **Confounder gate:** independently diff every effective
+  Kconfig key before vs after `olddefconfig`.
+  If any other key changes, classify as
+  `CONFOUNDED_ADDITIONAL_KCONFIG_CHANGES`, not a
+  one-variable causal experiment, even if CRC matches.
+- All results go to the KMI evidence artifact. An
+  unavailable/failed experiment is `UNVERIFIED`, and
+  never modifies the primary built Image, phone, modules,
+  `CONFIG_MODVERSIONS` or enforcement status.
+
+Regression tests now include a matching mock CRC, an
+induced unrelated Kconfig change, and a missing input
+file. These tests verify report semantics and absence of
+Image mutation, **not** that the actual kernel CRC has
+already been restored.
+
+**Preserve the working kernel**: because Android and Bluetooth
+are operational with #233 installed, do not switch this
+option on the phone until the controlled experiment
+and broader ABI impact are understood.
+
 ## Direct offline BTF/STG structural forensics from booted Image (14 Nov 2026)
 
 The exact **44,431,872-byte** `Image` from successful Actions
