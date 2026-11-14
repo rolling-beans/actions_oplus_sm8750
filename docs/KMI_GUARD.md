@@ -255,6 +255,68 @@ lack vmlinux BTF, check the *running kernel's* Kconfig/build artifact
 before selecting a different reference source. A BTF-enabled `vmlinux`
 from a CI build is **not automatically boot-verified**.
 
+## Direct offline BTF/STG structural forensics from booted Image (14 Nov 2026)
+
+The exact **44,431,872-byte** `Image` from successful Actions
+#233 contains a valid raw `.BTF` section at **byte offset
+28,966,320**. The BTF is **7,120,322 bytes**; its SHA-256 is
+`9c7cb124d48d9001211a736b965583b880351a7c1051a4667f5aab52b130b041`,
+**identical** to the independent `/sys/kernel/btf/vmlinux`
+snapshot taken earlier from the already booted phone.
+This independently proves the type data under study belongs
+to the exact working kernel without requiring new phone access.
+
+The source STG `sk_filter_trim_cap` function type
+(`0x9ad5b349`) describes `int (struct sock *, struct sk_buff *,
+unsigned int)`, matching BTF function ID **144100** / prototype
+ID **144099** in the compiled Image. Comparing upper-level
+recorded layouts, not just sizes:
+
+| Type | Source STG | Running Image BTF | Observed difference |
+|---|---|---|---|
+| `struct sock` | 856 B, 103 members | 856 B, 103 members (ID 4483) | None in member names/bit offsets |
+| `struct sk_buff` | 240 B, 28 members | 240 B, 28 members (ID 3501) | None in member names/bit offsets |
+| `struct sk_psock` | **480 B, 27 members** | **808 B, 30 members** (ID 12136) | **+328 B; 3 conditional fields** |
+
+The two matching layout name/offset sequences were independently
+hashed from STG and BTF; the SHA-256 matched exactly for each:
+- sock: `5966d2f7f16a4a807962af30ff1f382256fb31790adf6f1a5caf615a4ec2d28b`
+- sk_buff: `2fea33989bc2933594b846f7e0ac9c8fedc64466e92f505f87b26ef457324d39`
+
+The `sk_psock` change is explained directly by
+`include/linux/skmsg.h` in the pinned source commit:
+
+    #if IS_ENABLED(CONFIG_BPF_STREAM_PARSER)
+        struct strparser strp;
+        u32 copied_seq;
+        u32 ingress_bytes;
+    #endif
+
+All remaining `sk_psock` fields after that block shift by
+**328 bytes** in the compiled kernel, and its total size grows
+by **328 bytes**. The build workflow explicitly enables
+`CONFIG_BPF_STREAM_PARSER=y`; resolved #233 `kernel.config`
+confirms it. This establishes the cause of this specific
+top-level structure difference and makes BPF config toggles
+a justified lead for the 19 network/BPF CRC drifts.
+
+**Important limit:** the `sk_filter_trim_cap` function
+prototype and the top-level layouts of its direct parameter types
+(`sock` and `sk_buff`) have not changed. The existence
+of a changed `sk_psock` does **not prove** this difference
+reaches the `sk_filter_trim_cap` genksyms dependency graph.
+It is wrong to claim `CONFIG_BPF_STREAM_PARSER` is the
+proven cause of that specific CRC until a controlled A/B
+symtypes comparison is performed. Nested type graphs,
+conditional preprocessing and build-time patches remain
+to be investigated.
+
+**No kernel patch or config edit is recommended yet.** In
+particular, disabling this feature could remove functionality
+the user intentionally enabled and should only be considered
+after verifying its actual dependency on the mismatch.
+Never spoof module versions or skip CRC checks.
+
 ## Original STG CRC drift: 43 source KMI exports (14 Nov 2026)
 
 Investigation of `sk_filter_trim_cap` moved beyond module imports
