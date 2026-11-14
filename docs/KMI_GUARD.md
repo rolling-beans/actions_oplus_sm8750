@@ -276,7 +276,7 @@ recorded layouts, not just sizes:
 |---|---|---|---|
 | `struct sock` | 856 B, 103 members | 856 B, 103 members (ID 4483) | None in member names/bit offsets |
 | `struct sk_buff` | 240 B, 28 members | 240 B, 28 members (ID 3501) | None in member names/bit offsets |
-| `struct sk_psock` | **480 B, 27 members** | **808 B, 30 members** (ID 12136) | **+328 B; 3 conditional fields** |
+| `struct sk_psock` | **480 B, 27 members** | **808 B, 30 members** (ID 12112) | **+328 B; 3 conditional fields** |
 
 The two matching layout name/offset sequences were independently
 hashed from STG and BTF; the SHA-256 matched exactly for each:
