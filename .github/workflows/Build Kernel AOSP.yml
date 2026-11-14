@@ -1298,6 +1298,22 @@ jobs:
           cp "$SYMVERS" "$EVIDENCE/vmlinux.symvers"
           cp "$GITHUB_WORKSPACE/kout/.config" "$EVIDENCE/kernel.config"
 
+          # Advisory delta against the source's public ABI STG baseline.
+          # This never alters CRC/enforce behavior or claims Android boot failure.
+          STG_SOURCE="$GITHUB_WORKSPACE/kernel_workspace/common/android/abi_gki_aarch64.stg"
+          if [ -s "$STG_SOURCE" ]; then
+            if ! python3 "$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_stg_crc_diff.py" \
+              --stg "$STG_SOURCE" --symvers "$SYMVERS" \
+              --report-json "$EVIDENCE/stg-crc-diff.json" \
+              --report-md "$EVIDENCE/stg-crc-diff.md"; then
+              echo "::warning title=STG CRC evidence unavailable::See report artifact"
+            fi
+            cat "$EVIDENCE/stg-crc-diff.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=STG reference missing::ABI baseline source not present"
+            printf '%s\n' '{"schema_version":1,"status":"UNVERIFIED","reason":"source ABI STG missing"}' > "$EVIDENCE/stg-crc-diff.json"
+          fi
+
           # Diagnostic only. Full STG comparison requires an approved reference ABI.
           LAYOUTS="$EVIDENCE/type-layouts.txt"
           VMLINUX="$GITHUB_WORKSPACE/kout/vmlinux"
