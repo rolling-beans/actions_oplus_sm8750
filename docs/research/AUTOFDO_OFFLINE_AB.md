@@ -86,3 +86,54 @@ runtime improvement.
 
 Existing successful Android boot of the profiled kernel is separate
 from this offline analysis. This stage never touches any device.
+
+
+## Stage 3: LLVM sample loader and ThinLTO inline remarks
+
+Added \`tools/autofdo_loader_diagnostics.py\` and a profiled-vs-baseline
+instrumented build in Actions run
+[43703841188](https://github.com/rolling-beans/actions_oplus_sm8750/actions/runs/43703841188).
+
+This branch-only research adds no patches to the kernel itself and does
+not touch the production \`master\` workflow.
+
+**Direct LLVM source evidence**:
+
+- \`-sample-profile-check-record-coverage=101\`
+- \`-sample-profile-check-sample-coverage=101\`
+
+LLVM's SampleCoverageTracker reports per-function counts of profile records
+and sample weights applied to LLVM IR. Threshold 101 requests diagnostics
+even at 100% matching, as documented by LLVM's coverage-warning tests. These
+options are passed to kernel Clang through \`KCFLAGS\` **only** for the
+profiled job and to its vmlinux LLD ThinLTO passes.
+
+**Important aggregation limitation:** LLVM may process the same function
+multiple times in separate translation units and ThinLTO stages. A sum
+of "X of Y available samples" warnings is NOT a global percentage of
+the profile consumed by the kernel. The parser reports warning instance
+counts, unique diagnostic tuples and illustrative cases, without a false
+"whole kernel profile coverage" number. It also cannot prove whether
+profile information improves hardware execution time.
+
+At the link stage, the \`ld-wrapper\` requests serialized YAML optimization
+remarks filtered to \`inline|sample-profile\` for outputs whose basename
+begins with \`vmlinux\`. The parser counts remark types and named functions
+for each A/B build. This covers only passes with emitted remarks in the LLD
+ThinLTO phase; earlier per-object inlining can be missed. Missing YAML
+files must be reported as absence of evidence, **not** as zero inlining.
+
+The full raw LLD YAML and compiler logs remain ephemeral on the runner,
+while compact JSON samples and comparison Markdown are uploaded to the
+experiment's GitHub Actions artifacts. The profile bytes and Kconfig
+remain identical across both builds.
+
+Primary references:
+- https://llvm.org/docs/Remarks.html
+- https://clang.llvm.org/docs/UsersManual.html
+- https://llvm.org/doxygen/SampleProfileLoaderBaseUtil_8cpp_source.html
+- https://kernel.org/doc/html/latest/dev-tools/autofdo.html
+
+Stage-3 results and any blocked diagnostics must be recorded after
+the Actions run finishes. A successful compile with no parsed warnings
+does not establish complete profile coverage.
