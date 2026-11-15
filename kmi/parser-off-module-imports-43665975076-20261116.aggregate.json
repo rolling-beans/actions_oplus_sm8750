@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "scope": "CRC imports in supplied vendor/system_dlkm manifests only",
+  "module_count": 593,
+  "source_labels": [
+    "odm",
+    "system_dlkm",
+    "vendor",
+    "vendor_boot"
+  ],
+  "source_available": false,
+  "modules_with_incomplete_capture": 0,
+  "observed_required_import_count": 34353,
+  "baseline": {
+    "crc_mismatch": 1,
+    "matched": 34352
+  },
+  "variant": {
+    "matched": 34353
+  },
+  "baseline_definite_rejection_modules": 1,
+  "variant_definite_rejection_modules": 0,
+  "baseline_boot_requested_rejection_modules": 1,
+  "variant_boot_requested_rejection_modules": 0,
+  "changed_kernel_export_crc_count": 45,
+  "removed_kernel_export_count": 8,
+  "added_kernel_export_count": 0,
+  "changed_or_removed_export_imports": [
+    {
+      "symbol": "sk_filter_trim_cap",
+      "importing_modules": 1
+    }
+  ],
+  "sk_filter_trim_cap": {
+    "baseline_crc": "0x43eebd89",
+    "variant_crc": "0x553e24af",
+    "supplied_importer_count": 1
+  },
+  "source_coverage": "UNVERIFIED_FOR_FIRST_STAGE_VENDOR_BOOT_ODM",
+  "proves_android_boot_safety": false,
+  "proves_nested_structural_abi_safety": false,
+  "does_not_publish_module_paths": true,
+  "expected_modules_met": true,
+  "expected_imports_met": true,
+  "status": "PARTIAL_OR_UNVERIFIED",
+  "evidence_run_id": 43665975076,
+  "evidence_workflow_sha": "8b740db7582d1bc29449443bb43cd5e5a285f507",
+  "audit_date": "2026-11-16",
+  "independent_checker": {
+    "baseline": {
+      "matched_vmlinux": 29892,
+      "mismatched_vmlinux": 1,
+      "matched_ko": 4460
+    },
+    "variant": {
+      "matched_vmlinux": 29893,
+      "mismatched_vmlinux": 0,
+      "matched_ko": 4460
+    },
+    "unknown_provider": 0,
+    "ambiguous_provider": 0
+  },
+  "caveats": [
+    "Private manifests and unmatched symbol/module details are not published",
+    "Module load success and Android boot not tested",
+    "vendor_boot/odm early-stage coverage unavailable in these two captures",
+    "No enforce-mode approval for private manifest SHA/firmware coverage"
+  ]
+}

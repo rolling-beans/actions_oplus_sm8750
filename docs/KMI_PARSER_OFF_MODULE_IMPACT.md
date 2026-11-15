@@ -1,5 +1,58 @@
 # Parser-off KMI: real module import impact (research stage)
 
+## Verified real 593-module A/B import audit (16 November 2026)
+
+**New read-only evidence:** the private 498-vendor + 95-system_dlkm
+manifests recovered from the phone contain **34,353 required CRC imports**,
+with **zero module decode errors**. Both captures agree on kernel release
+and vendor/build identity. No proprietary module files or manifests were
+committed or uploaded to public GitHub.
+
+| Full linked Image | Matched imports | CRC mismatches | Missing kernel exports | Unknown / ambiguous .ko providers |
+|---|---:|---:|---:|---:|
+| parser=y (Run 43665975076) | 34,352 | **1** | 0 | 0 |
+| parser=n (same run) | **34,353** | **0** | 0 | 0 |
+
+Of all imports, 29,893 resolve to vmlinux and 4,460 to uniquely resolved
+.ko providers across the two captured source groups. The single parser-on
+mismatch is the original system_dlkm/bluetooth.ko import of
+sk_filter_trim_cap (requested CRC 0x553e24af; parser-on 0x43eebd89).
+The parser-off CRC matches that import. The one affected module is listed
+for startup in modules.load, but Linux bluetooth.ko was not loaded on the
+running Android system, where Bluetooth was enabled. An actual loader
+failure was not captured from current dmesg; no insmod attempt was made.
+
+**No other installed module in this captured inventory imports the
+remaining 44 changed common vmlinux export CRCs or any of the eight
+removed strp* exports.** This removes the principal observed module-CRC
+risk of the parser-off configuration *within the verified inventory*.
+
+An independent invocation of scripts/kmi_guard.py confirmed:
+- parser=y: 29,892 matching vmlinux imports, one vmlinux CRC mismatch,
+  plus 4,460 matching .ko-provider imports; MODULE_LOAD_REJECTION.
+- parser=n: 29,893 matching vmlinux imports plus 4,460 matching
+  .ko-provider imports; no detected module rejection; UNVERIFIED overall.
+
+The machine-readable public aggregate is
+kmi/parser-off-module-imports-43665975076-20261116.aggregate.json.
+Private manifest files, device identifiers and detailed module paths
+were deliberately excluded from GitHub. The aggregate still reports
+PARTIAL_OR_UNVERIFIED because odm and vendor_boot were unavailable during
+capture and the exact manifest/source-coverage SHA was not approved for
+enforce mode. This **does not** prove all first-stage modules are compatible,
+all nested KMI layouts match, or that parser-off boots safely.
+
+On the running phone, a read-only bpftool snapshot found no sk_skb BPF
+programs and no sockmap/sockhash BPF maps. This is a point-in-time
+observation and does not prove no future users of BPF stream parsing.
+
+**Suggested next decision boundary:** parser-off can now be considered
+for a separately approved *test* kernel deployment; preserve parser-on
+as the known-working fallback. Do not merge production policy, flash,
+reboot, or forcibly load bluetooth.ko without separate authorization.
+
+## Historical pre-capture research findings
+
 ## Input provenance and current findings
 
 The complete linked control and parser-off experiment:
@@ -21,7 +74,7 @@ The original 593-module inventory (498 vendor, 95 system_dlkm; 34,353
 imports) had exactly one direct kernel CRC mismatch with the earlier
 kernel Image: system_dlkm/bluetooth.ko importing sk_filter_trim_cap.
 The parser-off Image restored the STG CRC for sk_filter_trim_cap.
-**It has NOT yet been checked against the private 593-module inventory.**
+**At the time of the original full-Image run, it had not yet been checked against the private inventory; see the subsequent 16 November audit above.**
 In particular, none of the 26 additional CRC changes or eight removed
 exports may be assumed irrelevant merely because the 19 STG CRCs match.
 
