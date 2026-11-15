@@ -43,8 +43,10 @@ jobs:
             tools
           persist-credentials: false
 
-      - name: Verify metrics script syntax
-        run: python3 -m py_compile research-tools/tools/autofdo_offline_metrics.py
+      - name: Verify metrics and profile parsers
+        run: |
+          python3 -m py_compile research-tools/tools/autofdo_offline_metrics.py research-tools/tools/autofdo_profile_match.py
+          python3 research-tools/tools/autofdo_profile_match.py selftest
 
       - name: 🧠 Add swap space (for LTO link)
         run: |
@@ -160,7 +162,7 @@ jobs:
               echo "::error title=Missing LLVM profiler::llvm-profdata not found in the AOSP Clang toolchain"
               exit 1
             fi
-            if ! "$LLVM_PROFDATA" show --sample "$AFDO_OUT" > "$GITHUB_WORKSPACE/autofdo-profile-summary.txt" 2>&1; then
+            if ! "$LLVM_PROFDATA" show --sample --show-sec-info-only=true "$AFDO_OUT" > "$GITHUB_WORKSPACE/autofdo-profile-summary.txt" 2>&1; then
               echo "::error title=Invalid AutoFDO sample profile::llvm-profdata could not parse kernel.afdo"
               cat "$GITHUB_WORKSPACE/autofdo-profile-summary.txt"
               exit 1
@@ -1173,8 +1175,14 @@ jobs:
             --profile "$ROOT/kernel.afdo" \
             --linker-args "$ROOT/kout/autofdo-linker-args.log" \
             --output "$OUT"
-          "$CLANG/llvm-profdata" show --sample --topn=100 "$ROOT/kernel.afdo" > "$OUT/profile-top100.txt"
-          "$CLANG/llvm-profdata" show --sample --show-prof-sym-list=true "$ROOT/kernel.afdo" > "$OUT/profile-symbol-list.txt" || true
+          # Repair stage-1 nm metrics using positive-sized ELF STT_FUNC symbols;
+          # summarize exact profile name matches without implying LLVM IR coverage.
+          python3 "$ROOT/research-tools/tools/autofdo_profile_match.py" collect \
+            --toolchain "$CLANG" \
+            --vmlinux "$ROOT/kout/vmlinux" \
+            --profile "$ROOT/kernel.afdo" \
+            --output "$OUT"
+          "$CLANG/llvm-profdata" show --sample --show-sec-info-only=true "$ROOT/kernel.afdo" > "$OUT/profile-header.txt"
           "$CLANG/llvm-readelf" -SW "$ROOT/kout/vmlinux" > "$OUT/elf-sections.txt"
           grep -E "sample.profile|profile.*sampl|AutoFDO|lto-sample-profile" /tmp/kbuild.log | tail -n 500 > "$OUT/profile-build-notes.txt" || true
           cp "$ROOT/source-tree.sha256" "$OUT/source-tree.sha256"
@@ -1225,7 +1233,10 @@ jobs:
           set -euo pipefail
           python3 research-tools/tools/autofdo_offline_metrics.py compare \
             --input-dir offline-input --output offline-report
+          python3 research-tools/tools/autofdo_profile_match.py compare \
+            --input-dir offline-input --output offline-report
           cat offline-report/summary.md >> "$GITHUB_STEP_SUMMARY"
+          cat offline-report/profile-elf-comparison.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Preserve comparison report
         if: ${{ always() }}
