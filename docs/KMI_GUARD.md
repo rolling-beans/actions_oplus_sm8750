@@ -1,5 +1,118 @@
 # KMI Guard for OnePlus 13 (AOSP GKI 6.6)
 
+## BPF stream parser: 19/19 restored CRCs, feature costs, and active workload (15 Nov 2026)
+
+**New verified result:** [Actions Run #43661651465](https://github.com/rolling-beans/actions_oplus_sm8750/actions/runs/43661651465)
+completed **SUCCESS** at source commit
+`e062e96da078f8fdc1d8453d20a301d00c3af0da`.
+The normal ReSukiSU Image build, clean source snapshot,
+independent genksyms control and parser-off experiment all
+passed. The additional object-level sweep obtained complete
+CRC evidence for **all 19 original BPF/socket/XDP CRC drifts**.
+
+| Set | Number | Status |
+|---|---:|---|
+| Originally changed STG-vs-kernel CRCs | **43** | Previously measured on built vmlinux |
+| Changed BPF/socket/XDP exports | **19** | **19/19 RESTORED_TO_STG** after parser off |
+| Other changed exports (LZ4, ZSTD, ICC, misc) | **24** | **NOT TESTED in a full variant kernel** |
+
+Three patched-source objects were compiled with
+`KBUILD_SYMTYPES=1` for **both** independent output trees:
+`net/core/filter.o` (**5 symbols**, including per-CPU
+`bpf_redirect_info`), `net/core/skmsg.o` (**13**), and
+`net/ipv4/tcp_bpf.o` (**1**).
+For every exported symbol, the independent control CRC
+was **identical to the full kernel's actual `vmlinux.symvers`**,
+and the parser-off CRC was **identical to the original
+`abi_gki_aarch64.stg` reference**. There were no missing,
+ambiguous, mismatched-control or partially recovered symbols.
+
+The **19 verified restorations** include
+`sk_filter_trim_cap`, `bpf_redirect_info`,
+`bpf_warn_invalid_xdp_action`,
+`sk_msg_{alloc,clone,free,free_nocharge,free_partial,
+memcopy_from_iter,recvmsg,return_zero,trim,
+zerocopy_from_iter}`,
+`sk_psock_{drop,msg_verdict,tls_strp_read}`,
+`tcp_bpf_sendmsg_redir`,
+`xdp_{do_redirect,master_redirect}`.
+
+The precise type cause is unchanged from Run #43659182459:
+the conditional `s#sk_psock` structure, transitively
+reachable from other exported prototypes, changes when
+`CONFIG_BPF_STREAM_PARSER=y`. The A/B intervention
+also turns off the explicitly selected `CONFIG_STREAM_PARSER`
+dependency; **no other resolved Kconfig values changed**.
+The sweep is proof of object-level `genksyms` CRC
+restoration for **19** exports, not a fully built parser-off
+kernel. The heuristic residual **43 - 19 = 24** is **not**
+a separately measured variant vmlinux CRC comparison.
+No statement of boot safety or complete vendor-module
+loadability follows from this evidence.
+
+**Runtime function impact** in the exact pinned kernel:
+`CONFIG_BPF_STREAM_PARSER` enables the
+`BPF_SK_SKB_STREAM_PARSER` program attach type for
+`BPF_MAP_TYPE_SOCKMAP`/`SOCKHASH` and its TCP stream
+parser. The attach case is guarded by
+`#if IS_ENABLED(CONFIG_BPF_STREAM_PARSER)` in
+`net/core/sock_map.c`. The independent
+`BPF_SK_MSG_VERDICT`, `BPF_SK_SKB_STREAM_VERDICT`
+and `BPF_SK_SKB_VERDICT` cases remain in the source.
+The effective parser-off config still has
+`CONFIG_BPF_SYSCALL=y`, `CONFIG_BPF_JIT=y`,
+`CONFIG_CGROUP_BPF=y`, `CONFIG_FUSE_BPF=y`,
+`CONFIG_XDP_SOCKETS=y`, `CONFIG_NET_SOCK_MSG=y`.
+Hence disabling the parser has a **real but specialized**
+functionality cost, not a general BPF shutdown.
+
+**Read-only live OnePlus 13 snapshot (15 Nov 2026):**
+`/system/bin/bpftool -j prog show` enumerated
+**74** loaded BPF programs; **none** were of
+`sk_skb` type. `/system/bin/bpftool -j map show`
+enumerated **91** BPF maps, with **zero**
+`sockmap` or `sockhash`. Only aggregate type counts were
+recorded; no program or map identifiers were committed.
+This is a **time-specific observation**, not proof that
+the feature is unused under every workload or in the future.
+
+**Workflow configuration defect worth reviewing:**
+`CONFIG_BPF_STREAM_PARSER=y` is explicitly appended to
+`gki_defconfig` by the unrelated
+`Add IP_SET + IPv6 NAT Support` step
+(conditional on `inputs.ip_set_enable`), whereas
+`bpf_stack_enable` does not request it.
+The current source Kconfig requires INET, BPF_SYSCALL
+and CGROUP_BPF for BPF_STREAM_PARSER, but **not**
+IP_SET or IPv6 NAT. Consequently, the workflow
+unnecessarily couples an optional TCP parser to IP_SET.
+**No configuration change has been made** in this
+stage: dropping this line would remove a specialized
+capability and should be treated as a deliberate,
+separately tested feature policy, not a silent cleanup.
+GitHub workflow_dispatch already has 25 inputs, so adding
+a 26th checkbox is not a valid way to decouple it.
+
+**Decision boundary:** The running #233 Image boots and
+Android Bluetooth works without loading Linux
+`bluetooth.ko`. Preserving the parser retains a
+specialized but presently unobserved capability while
+leaving one known unused .ko CRC mismatch.
+Disabling the parser restores 19 KMI CRCs but should
+be weighed against future SOCKMAP stream-parser use.
+No flash, module load, SELinux modification or
+production kernel config change was made.
+
+Machine-readable source-of-truth:
+`kmi/ci-bpf-export-sweep-43661651465.json`;
+original GitHub artifact `kmi-guard-43661651465` contains
+the six per-object extracted `#SYMVER` records,
+the A/B JSON and the full source STG comparison.
+The checker and CI wrapper are
+`scripts/kmi_bpf_export_sweep.py` and
+`scripts/kmi_bpf_export_sweep_ci.sh`; **85 tests PASS**
+before Run #43661651465. PR remains Draft.
+
 ## Confirmed CI A/B root cause and restored CRC (15 Nov 2026)
 
 **Verdict: `CRC_RESTORED_TO_REFERENCE`** in GitHub Actions
