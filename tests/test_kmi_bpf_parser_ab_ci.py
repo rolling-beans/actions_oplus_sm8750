@@ -37,6 +37,7 @@ class BPFParserABTests(unittest.TestCase):
             '{"status":"COMPLETE"}\n')
         common_scripts = w / "kernel_workspace/kmi-isolated-common/scripts"
         common_scripts.mkdir(parents=True)
+        (common_scripts.parent / "Makefile").write_text("# mocked kernel tree\n")
         config = common_scripts / "config"
         config.write_text(
             "#!/bin/sh\n"
