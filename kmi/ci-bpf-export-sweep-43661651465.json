@@ -1,0 +1,200 @@
+{
+  "run_id": 43661651465,
+  "run_ref_sha": "e062e96da078f8fdc1d8453d20a301d00c3af0da",
+  "source_artifact": "kmi-guard-43661651465",
+  "source_artifact_id": 14140274640,
+  "comparator": {
+    "schema_version": 1,
+    "status": "COMPLETE",
+    "scope": "Changed BPF/socket/XDP reference STG exports only; object-level genksyms, not module-load or Android boot safety",
+    "changed_bpf_export_count": 19,
+    "status_counts": {
+      "RESTORED_TO_STG": 19
+    },
+    "input_object_cmd_sha256": {
+      "control/net/core/.filter.o.cmd": "3f261fa11aca3a4e281a917715dbe27d63954ade6ebcfec7f7e37b394956d1c5",
+      "control/net/core/.skmsg.o.cmd": "4996e231cbe108a1d167abce010c8bd7b6a7d8b3392c2652ff31e9cd1ce011c6",
+      "control/net/ipv4/.tcp_bpf.o.cmd": "3190f82a9bc86b3fa2692bdfc1a54ef148048ce0faa99a4013681e4388da8148",
+      "variant/net/core/.filter.o.cmd": "c279317c551ea5a430bd0b5e53ace54f14813df0a0ed5e07132489823148bd92",
+      "variant/net/core/.skmsg.o.cmd": "9ff60d69bcf7476c7284bfc87eb6d496831b81a5587877e4ccf4421f63a86a37",
+      "variant/net/ipv4/.tcp_bpf.o.cmd": "590762025bde295ee8071435f19e6c2669b3d056b6ab8f17f5d796a31cbf3921"
+    },
+    "results": [
+      {
+        "symbol": "bpf_redirect_info",
+        "reference_stg_crc": "0x678abaea",
+        "compiled_kernel_crc": "0x6457801d",
+        "source_object": "net/core/.filter.o.cmd",
+        "control_crc": "0x6457801d",
+        "variant_crc": "0x678abaea",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "bpf_warn_invalid_xdp_action",
+        "reference_stg_crc": "0xa483a455",
+        "compiled_kernel_crc": "0x9396ffab",
+        "source_object": "net/core/.filter.o.cmd",
+        "control_crc": "0x9396ffab",
+        "variant_crc": "0xa483a455",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_filter_trim_cap",
+        "reference_stg_crc": "0x553e24af",
+        "compiled_kernel_crc": "0x43eebd89",
+        "source_object": "net/core/.filter.o.cmd",
+        "control_crc": "0x43eebd89",
+        "variant_crc": "0x553e24af",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_msg_alloc",
+        "reference_stg_crc": "0xdf8557f3",
+        "compiled_kernel_crc": "0x2d995b0a",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0x2d995b0a",
+        "variant_crc": "0xdf8557f3",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_msg_clone",
+        "reference_stg_crc": "0xae7a4059",
+        "compiled_kernel_crc": "0xd417b107",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0xd417b107",
+        "variant_crc": "0xae7a4059",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_msg_free",
+        "reference_stg_crc": "0xfe546b71",
+        "compiled_kernel_crc": "0xc2bc4e95",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0xc2bc4e95",
+        "variant_crc": "0xfe546b71",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_msg_free_nocharge",
+        "reference_stg_crc": "0x7f6baa41",
+        "compiled_kernel_crc": "0x0722b9a2",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0x0722b9a2",
+        "variant_crc": "0x7f6baa41",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_msg_free_partial",
+        "reference_stg_crc": "0x61abfbd2",
+        "compiled_kernel_crc": "0x1464bdd5",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0x1464bdd5",
+        "variant_crc": "0x61abfbd2",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_msg_memcopy_from_iter",
+        "reference_stg_crc": "0x6ef5aee5",
+        "compiled_kernel_crc": "0xf56233ba",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0xf56233ba",
+        "variant_crc": "0x6ef5aee5",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_msg_recvmsg",
+        "reference_stg_crc": "0x2c39fbe5",
+        "compiled_kernel_crc": "0x8369377e",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0x8369377e",
+        "variant_crc": "0x2c39fbe5",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_msg_return_zero",
+        "reference_stg_crc": "0x7064b92c",
+        "compiled_kernel_crc": "0xdb93503d",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0xdb93503d",
+        "variant_crc": "0x7064b92c",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_msg_trim",
+        "reference_stg_crc": "0x1c9a5038",
+        "compiled_kernel_crc": "0xaa3d2a01",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0xaa3d2a01",
+        "variant_crc": "0x1c9a5038",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_msg_zerocopy_from_iter",
+        "reference_stg_crc": "0x104b7efc",
+        "compiled_kernel_crc": "0x808094b8",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0x808094b8",
+        "variant_crc": "0x104b7efc",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_psock_drop",
+        "reference_stg_crc": "0x2c1209a8",
+        "compiled_kernel_crc": "0x9030bafd",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0x9030bafd",
+        "variant_crc": "0x2c1209a8",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_psock_msg_verdict",
+        "reference_stg_crc": "0xdc93008c",
+        "compiled_kernel_crc": "0x1b89b5bf",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0x1b89b5bf",
+        "variant_crc": "0xdc93008c",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "sk_psock_tls_strp_read",
+        "reference_stg_crc": "0xbceecf7a",
+        "compiled_kernel_crc": "0x35f9f025",
+        "source_object": "net/core/.skmsg.o.cmd",
+        "control_crc": "0x35f9f025",
+        "variant_crc": "0xbceecf7a",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "tcp_bpf_sendmsg_redir",
+        "reference_stg_crc": "0x2a7744d0",
+        "compiled_kernel_crc": "0xa1253c0d",
+        "source_object": "net/ipv4/.tcp_bpf.o.cmd",
+        "control_crc": "0xa1253c0d",
+        "variant_crc": "0x2a7744d0",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "xdp_do_redirect",
+        "reference_stg_crc": "0xd04b7915",
+        "compiled_kernel_crc": "0x68c68bb1",
+        "source_object": "net/core/.filter.o.cmd",
+        "control_crc": "0x68c68bb1",
+        "variant_crc": "0xd04b7915",
+        "status": "RESTORED_TO_STG"
+      },
+      {
+        "symbol": "xdp_master_redirect",
+        "reference_stg_crc": "0xa7538b02",
+        "compiled_kernel_crc": "0xc5195703",
+        "source_object": "net/core/.filter.o.cmd",
+        "control_crc": "0xc5195703",
+        "variant_crc": "0xa7538b02",
+        "status": "RESTORED_TO_STG"
+      }
+    ],
+    "complete_variant_image_built": false,
+    "guaranteed_android_boot_safety": false,
+    "device_modified": false
+  },
+  "verdict_scope": "19 changed BPF exports restored at genksyms object level; remaining 24 CRC drifts NOT directly recomputed in variant vmlinux; no image flashed or booted"
+}

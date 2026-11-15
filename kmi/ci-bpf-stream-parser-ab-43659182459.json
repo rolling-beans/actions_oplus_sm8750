@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "subject": "OnePlus 13 KMI Guard / sk_filter_trim_cap",
+  "run_id": 43659182459,
+  "repository": "rolling-beans/actions_oplus_sm8750",
+  "workflow": "OP13 Kernel AOSP Build",
+  "branch": "feat/kmi-guard-vendor-crc-20261110",
+  "head_sha": "8ef39cbd4f4529fb3bb0ec3341a804ac12c05c11",
+  "run_conclusion": "success",
+  "evidence_artifact_id": 14139397509,
+  "evidence_artifact_name": "kmi-guard-43659182459",
+  "result": "CRC_RESTORED_TO_REFERENCE",
+  "source_snapshot": {
+    "status": "COMPLETE",
+    "matched_post_patch_sources": true,
+    "primary_kout_modified": false,
+    "device_modified": false
+  },
+  "control": {
+    "status": "BASELINE_REPRODUCED",
+    "compiled_kernel_crc": "0x43eebd89",
+    "independently_generated_filter_crc": "0x43eebd89",
+    "effective_kconfig_differences": {},
+    "primary_kout_modified": false
+  },
+  "variant": {
+    "status": "CRC_RESTORED_TO_REFERENCE",
+    "requested_kconfig_change": {
+      "CONFIG_BPF_STREAM_PARSER": [
+        "y",
+        "n"
+      ]
+    },
+    "derived_kconfig_change": {
+      "CONFIG_STREAM_PARSER": [
+        "y",
+        null
+      ]
+    },
+    "verified_source_select": "BPF_STREAM_PARSER select STREAM_PARSER",
+    "additional_unexpected_changes": 0,
+    "genksyms_crc": "0x553e24af",
+    "reference_stg_crc": "0x553e24af",
+    "target_module": "system_dlkm/bluetooth.ko",
+    "target_module_expected_symbol_crc": "0x553e24af",
+    "primary_kout_modified": false,
+    "device_modified": false
+  },
+  "symtypes": {
+    "control_records": 1214,
+    "variant_records": 1211,
+    "conflicting_duplicates_control": 0,
+    "conflicting_duplicates_variant": 0,
+    "changed_shared_type_records": [
+      "s#sk_psock"
+    ],
+    "removed_type_records": [
+      "s#strp_callbacks",
+      "s#strp_stats",
+      "s#strparser"
+    ],
+    "new_type_records": [],
+    "changed_member_tokens": [
+      "strp",
+      "copied_seq",
+      "ingress_bytes"
+    ],
+    "unchanged_direct_symbol_declaration": true,
+    "type_dependency_path": [
+      "sk_filter_trim_cap",
+      "s#sock",
+      "s#proto",
+      "s#sk_psock"
+    ],
+    "sha256_control": "fb2e22c711a7918ad47dd45e08d7e2d8f05a32b7a15ae70ed0e9ae66071985d6",
+    "sha256_variant": "cdf9f3827cb33c66881042c2031978459ffe1107e5026e6742e17da0a7924188"
+  },
+  "observed_current_kernel_stg_drift": {
+    "compared": 9329,
+    "crc_equal": 9286,
+    "crc_different": 43
+  },
+  "scope": [
+    "Exact CRC causality for sk_filter_trim_cap established in isolated object-level configuration A/B",
+    "Does not prove that all 43 STG CRC drifts or every vendor module mismatch is fixed",
+    "No complete variant kernel Image was linked or boot-tested",
+    "No firmware, active Android kernel, system partition, SELinux or module loads were modified"
+  ]
+}
