@@ -196,11 +196,19 @@ jobs:
             -mllvm -sample-profile-check-record-coverage=101 \
             -mllvm -sample-profile-check-sample-coverage=101 \
             /tmp/autofdo-diag-probe.c -o /tmp/autofdo-diag-probe.o
-          "$CLANG_BIN/ld.lld" --help > /tmp/autofdo-lld-help.txt
-          for flag in opt-remarks-filename opt-remarks-passes opt-remarks-with-hotness; do
-            grep -Fq -- "$flag" /tmp/autofdo-lld-help.txt || { echo "::error::LLD lacks $flag"; exit 1; }
-          done
-          echo 'Clang coverage and LLD remarks flags supported'
+          # Test the *exact argument syntax* on a real AArch64 relocatable
+          # link; grepping --help cannot detect wrong joined/separate forms.
+          "$CLANG_BIN/ld.lld" \
+            --opt-remarks-filename /tmp/autofdo-diag-probe.yaml \
+            --opt-remarks-passes 'inline|sample-profile' \
+            --opt-remarks-format yaml \
+            --opt-remarks-with-hotness \
+            -r -o /tmp/autofdo-diag-reloc.o /tmp/autofdo-diag-probe.o
+          test -s /tmp/autofdo-diag-reloc.o || {
+            echo "::error title=LLD preflight::AArch64 relocatable smoke link failed"
+            exit 1
+          }
+          echo 'Clang coverage options and actual LLD remarks argument syntax verified'
       - name: Cache ccache-ECS binary
         uses: actions/cache@v4
         id: ecs-cache
@@ -1055,10 +1063,10 @@ jobs:
           output_name="$(basename "$output")"
           if [[ "$output_name" == vmlinux* ]]; then
             mkdir -p "$GITHUB_WORKSPACE/analysis/$PROFILE_MODE/lto-remarks"
-            remarks_file="$GITHUB_WORKSPACE/analysis/$PROFILE_MODE/lto-remarks/$output_name-$.yaml"
-            remark_opts+=("--opt-remarks-filename=$remarks_file"
-              '--opt-remarks-passes=inline|sample-profile'
-              '--opt-remarks-format=yaml' '--opt-remarks-with-hotness')
+            remarks_file="$GITHUB_WORKSPACE/analysis/$PROFILE_MODE/lto-remarks/$output_name-${BASHPID}.yaml"
+            remark_opts+=('--opt-remarks-filename' "$remarks_file"
+              '--opt-remarks-passes' 'inline|sample-profile'
+              '--opt-remarks-format' 'yaml' '--opt-remarks-with-hotness')
             if [[ "$PROFILE_MODE" == profiled ]]; then
               remark_opts+=('--mllvm=-sample-profile-check-record-coverage=101'
                 '--mllvm=-sample-profile-check-sample-coverage=101')
@@ -1264,7 +1272,7 @@ jobs:
 
   comparison:
     needs: compare-build
-    if: ${{ always() }}
+    if: ${{ needs.compare-build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
