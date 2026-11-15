@@ -228,3 +228,30 @@ The current Python diagnostics parser independently recomputes `percent_exact` f
 5. Update loader diagnostics to track inconsistent/zero-denominator/`used > available` rows separately and compute the reported ratio with at least 64-bit-safe arithmetic **for reporting**; do not silently fold anomalies into 0–100% coverage.
 6. Editing the existing `tools/autofdo_loader_diagnostics.py` or experimental workflow triggers an automatic full A/B run via `on.push.paths`. Prototype/test fixes without touching those paths until another expensive pair is explicitly warranted. A documentation-only commit is safe.
 7. No changes to production workflow, no device flashes, no claim of actual OnePlus 13 performance improvement.
+## Stage 3 follow-up: full GitHub job-log audit (16 November 2026)
+
+Source: [successful run #43706179572, profiled job #132787639897](https://github.com/rolling-beans/actions_oplus_sm8750/actions/runs/43706179572/job/132787639897). This audit downloaded and scanned the **full 20,691,796-character GitHub job log** through the GitHub API, not merely the 500 retained \`profile-build-notes.txt\` lines. No new kernel build was launched.
+
+| Check | Profile records | Profile samples |
+|---|---:|---:|
+| All matching LLVM diagnostic lines | 61,967 | 57,704 |
+| Accepted by the current diagnostics parser | 52,651 | 47,068 |
+| Denominator \`available == 0\` | 9,316 | 10,211 |
+| Numerator \`used > available\` | 0 | 749 |
+| Overlap of the previous two conditions | 0 | 324 |
+| Unique excluded instances (union) | 9,316 | 10,636 |
+
+Total raw diagnostic instances: **119,671**. The current parser accepts **99,719**, rejecting **19,952 (16.67%)** on its explicit \`not avail or used > avail\` guard. Reprocessing the full GitHub log with precisely that validity predicate reproduces the two saved \`compiler-diagnostics.json\` counters **exactly**. The missing cases are therefore intentional filtering, not failed regex matching in the saved job log. Exclusion does **not** mean that 16.67% of profile samples were unused.
+
+In the \`samples\` diagnostics, **4,981 of 57,704** emitted percentages disagree with the 64-bit mathematical \`100 * used / available\` ratio by more than one percentage point (excluding zero denominators). All emitted percentages in the full log reproduce the observed LLVM unsigned-32-bit \`computeCoverage\` arithmetic (including overflow; zero denominators are printed as 100%). No analogous mismatch was observed for \`records\` diagnostics in this log.
+
+The affected output includes e.g. \`1139209604 of 1139209604 available profile samples (1%) were applied\`. Here the numerator and denominator are equal, yet the diagnostic prints 1%. Therefore neither the raw LLVM percentage nor the current parser's restricted set of admitted rows should be presented as a global profile-to-IR success rate. In the full log, zero-denominator warnings are common in header/atomic support paths, where repeated translation-unit contexts also make location-level deduplication nontrivial. A path/line is **not** a stable unique function identifier.
+
+**Code-level explanation / provenance caveat:** LLVM upstream's \`SampleCoverageTracker::computeCoverage(unsigned Used, unsigned Total)\` computes \`Used * 100 / Total\`, while the samples path uses 64-bit counts before passing them to that interface. The full-log 32-bit arithmetic agreement strongly supports a diagnostic-computation overflow/narrowing issue, but the exact Google Android r563880c source revision has not been independently fetched. References: [SampleProfileLoaderBaseUtil.cpp](https://llvm.org/doxygen/SampleProfileLoaderBaseUtil_8cpp_source.html), [SampleProfileLoaderBaseImpl.h](https://llvm.org/doxygen/SampleProfileLoaderBaseImpl_8h_source.html). This is **not evidence of incorrect AutoFDO application to IR or corruption of generated code**; it affects the coverage diagnostic display.
+
+**Recommended bounded follow-up:**
+
+1. In a standalone parser revision, retain and count \`0/0\`, \`used > available\`, and overflow-displayed sample warnings separately instead of silently discarding them. Use wide arithmetic for human-readable fractions and mark mathematically invalid ratios as non-interpretable. Do not aggregate warnings into a global coverage percentage.
+2. Add tests from **real** observed warnings, including equal large counts printed as 1%, 0/0, and used > available. Explicitly annotate which values are from LLVM and which are recomputed by the parser.
+3. For inline causality, the present first-2,000-case JSON limit and omission of nested YAML \`Args\`/\`DebugLoc\` mean the retained artifacts are insufficient. Design a bounded streaming extractor before deciding whether a new instrumented build is worth its Actions cost.
+4. \`on.push.paths\` includes \`tools/autofdo_loader_diagnostics.py\` and the experimental workflow; editing either automatically launches an expensive A/B run. Documentation-only changes do **not**. Do not trigger another full A/B solely to reprocess diagnostics already available in GitHub logs.
