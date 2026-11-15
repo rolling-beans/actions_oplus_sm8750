@@ -20,11 +20,6 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      kmi_symtypes_probe:
-        description: 'Capture sk_filter_trim_cap genksyms evidence (optional, no Image changes)'
-        required: false
-        type: boolean
-        default: false
       ksu_type:
         description: 'KernelSU variant'
         required: false
@@ -1275,12 +1270,12 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: 🔬 Capture sk_filter_trim_cap genksyms evidence
-        if: inputs.kmi_symtypes_probe == true
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/feat/kmi-guard-vendor-crc-20261110'
         shell: bash
         run: bash "$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_capture_symtypes_ci.sh"
 
       - name: 🧪 Isolated BPF_STREAM_PARSER KMI A/B CRC experiment
-        if: inputs.kmi_symtypes_probe == true
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/feat/kmi-guard-vendor-crc-20261110'
         shell: bash
         run: bash "$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_bpf_stream_parser_ab_ci.sh"
 
