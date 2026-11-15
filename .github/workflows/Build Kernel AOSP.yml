@@ -1269,6 +1269,11 @@ jobs:
             kernel-config-diagnostics.md
           if-no-files-found: warn
           retention-days: 14
+      - name: 🧬 Prepare isolated patched source for KMI experiments
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/feat/kmi-guard-vendor-crc-20261110'
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_prepare_isolated_source_ci.sh"
+
       - name: 🔬 Capture sk_filter_trim_cap genksyms evidence
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/feat/kmi-guard-vendor-crc-20261110'
         shell: bash
