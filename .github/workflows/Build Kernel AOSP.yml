@@ -1399,6 +1399,11 @@ jobs:
           fi
           exit "$rc"
 
+      - name: 🧭 Compare BPF-related exports across parser A/B
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/feat/kmi-guard-vendor-crc-20261110'
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_bpf_export_sweep_ci.sh"
+
       - name: 📤 Upload KMI Guard evidence
         if: always()
         uses: actions/upload-artifact@v4
