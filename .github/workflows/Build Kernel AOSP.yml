@@ -233,6 +233,7 @@ jobs:
           echo "Cloning source repository..."
           curl -L https://github.com/palazik/android_kernel_common_oneplus_sm8750/archive/refs/heads/${{ env.KERNEL_FULL_VERSION }}_oneplus13_coloros16.zip \
             -o common.zip &&
+          sha256sum common.zip > "$GITHUB_WORKSPACE/kernel-source-archive.sha256" &&
           unzip -q common.zip &&
           mv android_kernel_common_oneplus_sm8750-* common &&
           rm -f common.zip &
@@ -1270,7 +1271,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: 🧬 Prepare isolated patched source for KMI experiments
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/feat/kmi-guard-vendor-crc-20261110'
+        if: github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/feat/kmi-guard-vendor-crc-20261110' || github.ref == 'refs/heads/research/kmi-full-parser-off-20261115')
         shell: bash
         run: bash "$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_prepare_isolated_source_ci.sh"
 
@@ -1399,6 +1400,14 @@ jobs:
           fi
           exit "$rc"
 
+      # Separate research branch. Normal production defconfig remains parser=y.
+      # Same runner builds full parser=y control, followed by a full parser=n
+      # Image from an isolated snapshot of the exact same patched sources.
+      - name: 🧪 Full Image parser-off isolated KMI experiment
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/research/kmi-full-parser-off-20261115'
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/kmi-tools/scripts/kmi_full_parser_off_ci.sh"
+
       - name: 🧭 Compare BPF-related exports across parser A/B
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/feat/kmi-guard-vendor-crc-20261110'
         shell: bash
@@ -1410,6 +1419,15 @@ jobs:
         with:
           name: kmi-guard-${{ github.run_id }}
           path: kmi-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: 📦 Upload complete parser-off kernel research artifacts
+        if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/research/kmi-full-parser-off-20261115'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmi-full-parser-off-${{ github.run_id }}
+          path: kmi-full-parser-off-evidence/
           if-no-files-found: warn
           retention-days: 30
 
