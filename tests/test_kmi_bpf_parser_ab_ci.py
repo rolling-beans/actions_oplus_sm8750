@@ -22,7 +22,20 @@ class BPFParserABTests(unittest.TestCase):
         if with_input:
             (main / ".config").write_text("CONFIG_BPF_STREAM_PARSER=y\n")
         (main / "Image").write_bytes(b"original-kernel-image")
-        common_scripts = w / "kernel_workspace/common/scripts"
+        control = w / "kmi-bpf-parser-on-output"
+        control.mkdir()
+        (control / ".config").write_text("CONFIG_BPF_STREAM_PARSER=y\n")
+        evidence = w / "kmi-evidence"
+        evidence.mkdir()
+        (evidence / "sk_filter_trim_cap-control.json").write_text(json.dumps({
+            "status": "BASELINE_REPRODUCED",
+            "control_matches_kernel_crc": True,
+            "local_control_crc": "0x43eebd89",
+            "baseline_config_changes": {},
+        }))
+        (evidence / "kmi-isolated-source.json").write_text(
+            '{"status":"COMPLETE"}\n')
+        common_scripts = w / "kernel_workspace/kmi-isolated-common/scripts"
         common_scripts.mkdir(parents=True)
         config = common_scripts / "config"
         config.write_text(
@@ -103,7 +116,7 @@ class BPFParserABTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             mockbin = self.create_workspace(root)
-            with (root / "kout/.config").open("a") as stream:
+            with (root / "kmi-bpf-parser-on-output/.config").open("a") as stream:
                 stream.write("CONFIG_STREAM_PARSER=y\n")
             result = self.run_script(root, mockbin)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -119,7 +132,7 @@ class BPFParserABTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             mockbin = self.create_workspace(root)
-            with (root / "kout/.config").open("a") as stream:
+            with (root / "kmi-bpf-parser-on-output/.config").open("a") as stream:
                 stream.write("CONFIG_CGROUPS=y\n")
             # Simulate olddefconfig changing a second config option.
             make = mockbin / "make"
