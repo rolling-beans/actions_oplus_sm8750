@@ -1,5 +1,83 @@
 # KMI Guard for OnePlus 13 (AOSP GKI 6.6)
 
+## Confirmed CI A/B root cause and restored CRC (15 Nov 2026)
+
+**Verdict: `CRC_RESTORED_TO_REFERENCE`** in GitHub Actions
+**Run #43659182459**, commit `8ef39cbd4f4529fb3bb0ec3341a804ac12c05c11`.
+The normal ReSukiSU kernel build passed, then three post-build
+diagnostics ran against an **isolated verified snapshot of the
+already patched source tree**.
+
+Prior Run **#43657413261** compiled the kernel successfully, but
+the optional `genksyms` probes were `UNVERIFIED` because
+`Makefile:669 outputmakefile` rejects an out-of-tree build
+when the source contains generated `.config`, `include/config`,
+or `arch/arm64/include/generated`. A green Actions build was
+not an experimental result. **Do not use `mrproper` on the
+primary build tree.**
+
+The fix uses `scripts/kmi_prepare_isolated_source_ci.sh`
+to copy the fully patched source via `rsync` while excluding
+only generated Kbuild paths. It checks SHA-256 equality for
+critical original and copied sources and never changes the
+original source or compiled `kout`. Control and experimental
+`make O=` outputs are kept in separate directories. The source
+snapshot's own JSON status is **`COMPLETE`**.
+
+**Actual independently measured CRCs**
+
+| Input | `sk_filter_trim_cap` CRC |
+|---|---|
+| Boot-verified phone kernel / Actions #233 | `0x43eebd89` |
+| Independently rebuilt Run #43659182459 control (`BPF_STREAM_PARSER=y`) | **`0x43eebd89`** |
+| Isolated Run #43659182459 variant (`BPF_STREAM_PARSER=n`) | **`0x553e24af`** |
+| Original Android GKI STG and stock `system_dlkm/bluetooth.ko` requirement | **`0x553e24af`** |
+
+Control status **`BASELINE_REPRODUCED`**: its `genksyms`
+CRC matched compiled `vmlinux.symvers` exactly, and
+**no effective Kconfig values changed** when preparing the
+independent control output. The variant status was
+**`CRC_RESTORED_TO_REFERENCE`**, with precisely two
+effective Kconfig differences:
+`CONFIG_BPF_STREAM_PARSER=y→n` and automatically selected
+`CONFIG_STREAM_PARSER=y→absent`. Source `net/Kconfig` explicitly
+declares `BPF_STREAM_PARSER select STREAM_PARSER`.
+
+**Direct genksyms type evidence:** baseline `filter.symtypes`
+has **1,214** records, variant has **1,211**. Exactly **one
+shared type declaration changed**, `s#sk_psock`, losing members
+`strp`, `copied_seq`, `ingress_bytes`. The three records
+`s#strp_callbacks`, `s#strp_stats` and `s#strparser` are
+absent in the variant. The symbol declaration and text records
+`s#sock`, `s#proto` and `s#sk_buff` are unchanged. Verified
+reference path: `sk_filter_trim_cap → s#sock → s#proto →
+s#sk_psock`. Complete genksyms closure had **1,078**
+transitive records, **zero unresolved**.
+
+**Scope:** This experimentally establishes why the
+`sk_filter_trim_cap` CRC exported by the current kernel differs
+from stock and that disabling the BPF stream parser in the
+isolated build restores that exact CRC. The variant was **not
+linked into a complete kernel, installed, or boot-tested**.
+It does **not** prove that all 43 reference-STG CRC drifts or
+every installed vendor module dependency would be resolved.
+It is not permission to spoof CRCs, force-load modules,
+or assume the phone's kernel should be changed immediately.
+
+Evidence links:
+- Run: https://github.com/rolling-beans/actions_oplus_sm8750/actions/runs/43659182459
+- Original ZIP artifact: `kmi-guard-43659182459` (raw `filter.symtypes` and
+  `filter-parser-off.symtypes`, config diff and CRC reports)
+- Structured, non-sensitive result: `kmi/ci-bpf-stream-parser-ab-43659182459.json`
+- Reproduction script: `scripts/kmi_bpf_stream_parser_ab_ci.sh`
+
+**Manual dispatch policy:** GitHub allows 25 inputs per
+`workflow_dispatch` and the original workflow already has
+25. The experimental probe is therefore enabled **only**
+for a manual dispatch to branch
+`feat/kmi-guard-vendor-crc-20261110`, not by an added input.
+Normal PR/push builds skip the experiment.
+
 ## Purpose and limits
 
 The goal is to detect **definite normal module-loading incompatibilities before flashing**. These are not equivalent to a guaranteed Android boot failure. Even a module listed in modules.load might be optional, and a module whose CRC matches can still be incompatible because of structure layout changes outside the CRC's coverage.
@@ -343,15 +421,17 @@ alone cannot establish causation; in particular, it is false
 to claim the structural `sk_psock` difference definitely
 caused all 19 CRC changes.
 
-Controlled test, **not yet run in a real GitHub Actions build**:
+Controlled test, **executed successfully in GitHub Actions #43659182459** (historical plan follows):
 
-- Enable manual workflow dispatch input
-  `kmi_symtypes_probe=true` (off by default).
-- Following the normal unchanged kernel Image build,
-  `kmi_capture_symtypes_ci.sh` records the original kernel
-  `net/core/filter.symtypes` and its `genksyms` closure.
+- Manually dispatch the original workflow on the dedicated
+  KMI feature branch; the event+branch gate enables the experiment
+  without exceeding the 25-input limit.
+- Following the unchanged Image build, a clean snapshot of the
+  already patched source and independent control output are prepared.
+  `kmi_capture_symtypes_ci.sh` records its complete `genksyms`
+  closure without writing to `kout`.
 - `kmi_bpf_stream_parser_ab_ci.sh` copies the effective
-  built `kout/.config` to a fresh independent output directory,
+  independently resolved control `.config` to a fresh variant output,
   requests `CONFIG_BPF_STREAM_PARSER=n`, calls
   `olddefconfig`, `prepare` and compiles only
   `net/core/filter.o` with `KBUILD_SYMTYPES=1`,
@@ -378,11 +458,11 @@ Controlled test, **not yet run in a real GitHub Actions build**:
   never modifies the primary built Image, phone, modules,
   `CONFIG_MODVERSIONS` or enforcement status.
 
-Regression tests now include a matching mock CRC, an
-induced unrelated Kconfig change, and a missing input
-file. These tests verify report semantics and absence of
-Image mutation, **not** that the actual kernel CRC has
-already been restored.
+Regression tests cover the matching CRC, an unrelated Kconfig
+change, missing input, and integrity/absence-of-mutation of
+the isolated patched-source snapshot. Run #43659182459
+**independently verifies** CRC restoration on real Kbuild
+outputs; unit tests alone were not used for that claim.
 
 **Preserve the working kernel**: because Android and Bluetooth
 are operational with #233 installed, do not switch this
@@ -493,29 +573,32 @@ ABI drift clusters. **STG CRC drift is not equivalent to module
 failure**: among 34,353 verified imports of 593 installed modules
 only one requires a mismatched CRC.
 
-**Cause not yet isolated.** The function prototype and four source
+**Historical pre-experiment diagnosis:** The function prototype and four source
 files match the Android GKI tag, making a direct edit to that
 function an unsupported explanation. Candidate Kconfig selections,
 transitive headers, build-time patches or genksyms visibility may
 still change the versioned type graph. The original `.stg`
 encodes a function returning `int`, with `struct sock *` and
 `struct sk_buff *` parameters, matching the source prototype.
-The precise type or macro responsible remains unresolved.
+The precise changed transitive type was then isolated by the
+  confirmed A/B experiment above: `s#sk_psock`.
 
-To capture next-stage evidence safely, a new *opt-in* manual
-workflow_dispatch input `kmi_symtypes_probe=true` generates
-`net/core/filter.symtypes` after compiling the kernel using the
-same source/output tree and a bounded 180-second make target.
+To capture evidence safely, a manual dispatch from the dedicated
+KMI feature branch prepares a clean copy of patched sources
+and separate control and variant output directories before
+capturing `net/core/filter.symtypes` with bounded Kbuild targets.
 The separate helper `scripts/kmi_symtypes_closure.py` extracts
 the referenced type graph for `sk_filter_trim_cap` and records
-missing or ambiguous type descriptions. The probe is skipped by
-default, cannot change the built `Image` or loader behavior, and
+missing or ambiguous type descriptions. The probe is skipped on regular PR/push runs, cannot change the
+built `Image` or loader behavior, and
 never suppresses mismatched CRCs. The normal KMI evidence job
 also now compares STG CRCs and stores the report.
 
-The staged workflow and all Python tests have been validated on
-the VPS. **A full GitHub Actions run of the new optional probe has
-not yet completed**; do not claim the exact `.symtypes` is captured.
+The initial Run #43657413261 captured only `UNVERIFIED`
+probe output due to in-tree generated files. The corrected
+Run #43659182459 **completed the full genksyms A/B** with
+zero missing transitive declarations, a reproduced control CRC,
+and a variant CRC exactly equal to the stock STG reference.
 Additional source comparison is needed before proposing a patch,
 including checking whether any candidate structural change is
 real or just an input representation change. No `genksyms`
