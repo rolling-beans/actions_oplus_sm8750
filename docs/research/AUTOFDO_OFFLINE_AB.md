@@ -44,3 +44,45 @@ Do **not** boot-test experimental images from this branch automatically. No GitH
 The experimental workflow is auto-triggered only by a push affecting `.github/workflows/AutoFDO Offline Compare.yml` or `tools/autofdo_offline_metrics.py` in the research branch. The kernel source archive is pinned, while other externally fetched patch/script repositories are not all pinned; the source-tree fingerprint detects source drift and causes comparison rejection instead of implying identical inputs. The profile URL is a mutable Android GKI branch ref; the captured SHA256 ensures both jobs used the same profile bytes.
 
 The findings are *offline measurements only*; the research is not a formal end-to-end validation of the production kernel or its boot properties.
+
+
+## Stage 2: ELF function-size correction and profile name matching
+
+The first comparison (Actions run 43659919568, PASS) found +2.674% in
+\`.text\`, +1.666% in \`Image\` and +1.744% in \`vmlinux\` for the profiled
+build. The observed -20.640% build-time difference is **not a valid causal
+estimate**: the builds ran on independent GitHub runners, once each.
+
+**Correction:** the v1 \`llvm-nm\` parser yielded 2,877 size-zero symbols
+such as \`__kcfi_typeid_*\`. Its \`text_symbol_count\`,
+\`text_symbol_size_sum\`, \`top_text_symbols\` and the generated
+\`top-text-symbols.tsv\` must NOT be used as function-size evidence.
+
+Stage 2 adds \`tools/autofdo_profile_match.py\`. It parses
+\`llvm-readelf --symbols --wide\` for defined \`STT_FUNC\` records with
+positive \`st_size\`, then replaces the misleading count/sum in the
+metrics JSON. \`elf-function-sizes.json\` contains the corrected data;
+the old top-text-symbols TSV is still produced by the v1 collector and
+should be ignored. Duplicate local names are deduplicated using their
+largest size. A \`STT_FUNC\` size is not necessarily disjoint or a
+complete count of executable bytes.
+
+The analyzer also streams the \`llvm-profdata show --sample\` function
+headers and reports conservative *exact-name intersection* of sampled
+functions with ELF symbols, along with a TotalSamples-weighted **proxy**.
+This is NOT the percentage of profile records or samples applied by LLVM:
+ThinLTO may inline, rename, clone, fold, or eliminate functions before
+ELF emission. TotalSamples can include inlined nested samples, so
+summing function weights can overcount. A function absent from the final
+ELF can nevertheless have informed successful inlining.
+
+The profile summary now uses \`--show-sec-info-only\`, avoiding accidental
+archival of multiple ~45 MB full profile dumps.
+
+Next research criterion: quantify actual sample-to-IR coverage from LLVM
+diagnostics when a compatible, aggregation-safe measurement method is
+validated. Do not report static name overlap as compiler coverage or
+runtime improvement.
+
+Existing successful Android boot of the profiled kernel is separate
+from this offline analysis. This stage never touches any device.
