@@ -86,7 +86,7 @@ def collect(args):
         "build_seconds": int(Path(args.build_duration).read_text().strip()),
         "profile_sha256": (
             digest(Path(args.profile))
-            if args.mode == "profiled" and args.profile and Path(args.profile).is_file()
+            if args.profile and Path(args.profile).is_file()
             else None
         ),
         "profiled_linker_arg_seen": bool(
@@ -112,7 +112,7 @@ def compare(args):
     if set(items) != {"baseline", "profiled"}:
         raise ValueError(f"expected both modes, got {sorted(items)}")
     a, b = items["baseline"], items["profiled"]
-    required = ["source_fingerprint", "compiler", "lld", "config_sha256"]
+    required = ["source_fingerprint", "compiler", "lld", "config_sha256", "profile_sha256"]
     mismatches = [key for key in required if a[key] != b[key]]
     if mismatches:
         raise ValueError(f"A/B is not controlled: different {mismatches}")
@@ -128,10 +128,10 @@ def compare(args):
         "The only intended treatment is the presence of CLANG_AUTOFDO_PROFILE.",
         "These are *static code/build measurements*, not device performance benchmarks.",
         "",
-        f"- Compiler: \`{a['compiler']}\`",
-        f"- Source manifest SHA256: \`{a['source_fingerprint']}\`",
-        f"- Configuration SHA256: \`{a['config_sha256']}\`",
-        f"- Profile SHA256: \`{b['profile_sha256']}\`", "",
+        f"- Compiler: `{a['compiler']}`",
+        f"- Source manifest SHA256: `{a['source_fingerprint']}`",
+        f"- Configuration SHA256: `{a['config_sha256']}`",
+        f"- Profile SHA256: `{b['profile_sha256']}`", "",
         "| Metric | ThinLTO only | ThinLTO + AutoFDO | Change |",
         "|---|---:|---:|---:|",
     ]
