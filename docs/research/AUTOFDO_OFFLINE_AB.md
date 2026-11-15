@@ -137,3 +137,10 @@ Primary references:
 Stage-3 results and any blocked diagnostics must be recorded after
 the Actions run finishes. A successful compile with no parsed warnings
 does not establish complete profile coverage.
+
+## Stage 3 initial failure and corrective change
+
+- Run [43703841188](https://github.com/rolling-beans/actions_oplus_sm8750/actions/runs/43703841188) **FAILED** in both variants at `vmlinux.o` link, due to joined `--opt-remarks-filename=...`, `--opt-remarks-passes=...`, and `--opt-remarks-format=...` flags rejected by the bundled Android LLD. The `comparison` job failed consequentially because the build did not produce complete metrics.
+- Diagnostic root cause is **argument syntax**, not proof of an AutoFDO or kernel compilation regression. Earlier A/B runs succeeded without linker remark options.
+- Fix in commit `ee8375c5c4b078b7936e739404ae36c885f6eb90`: use separate option/value argv pairs for these LLD options. Perform an AArch64 relocatable smoke link using **the exact arguments** during preflight rather than merely grepping `ld.lld --help`. Use process-specific remark filenames and skip dependent comparison when builds fail.
+- Verify the **new** run [43706179572](https://github.com/rolling-beans/actions_oplus_sm8750/actions/runs/43706179572) before claiming all diagnostics work.
