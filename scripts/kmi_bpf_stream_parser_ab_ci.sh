@@ -6,8 +6,9 @@
 set -euo pipefail
 : "${GITHUB_WORKSPACE:?GitHub workspace is required}"
 W="$GITHUB_WORKSPACE"
-SOURCE="$W/kernel_workspace/common"
+SOURCE="$W/kernel_workspace/kmi-isolated-common"
 MAIN="$W/kout"
+CONTROL="$W/kmi-bpf-parser-on-output"
 ALT="$W/kmi-bpf-parser-off-output"
 EVIDENCE="$W/kmi-evidence"
 mkdir -p "$EVIDENCE" "$ALT"
@@ -30,8 +31,12 @@ PY
 
 [[ -s "$MAIN/.config" && -s "$MAIN/vmlinux.symvers" ]] ||
   fail "original compiled kernel evidence missing"
+[[ -s "$CONTROL/.config" && -s "$EVIDENCE/sk_filter_trim_cap-control.json" ]] ||
+  fail "isolated baseline genksyms evidence missing"
+[[ -s "$SOURCE/Makefile" && -s "$EVIDENCE/kmi-isolated-source.json" ]] ||
+  fail "isolated patched source evidence missing"
 [[ ! -e "$ALT/.config" ]] || fail "isolated output directory already configured; refusing to overwrite"
-cp "$MAIN/.config" "$ALT/.config"
+cp "$CONTROL/.config" "$ALT/.config"
 "$SOURCE/scripts/config" --file "$ALT/.config" --disable BPF_STREAM_PARSER
 
 export PATH="$W/kernel_workspace/clang-r563880c/bin:$W/kernel_workspace/build-tools/linux-x86/bin:$PATH"
@@ -51,7 +56,7 @@ grep -qx '# CONFIG_BPF_STREAM_PARSER is not set' "$ALT/.config" ||
   fail "Kconfig did not resolve BPF_STREAM_PARSER to n"
 # Distinguish direct user-controlled config toggles from a *verified*
 # Kconfig-selected dependency. Any other change is a confounder.
-python3 - "$MAIN/.config" "$ALT/.config" "$EVIDENCE/bpf-stream-parser-ab-config-diff.json" "$SOURCE/net/Kconfig" <<'PY'
+python3 - "$CONTROL/.config" "$ALT/.config" "$EVIDENCE/bpf-stream-parser-ab-config-diff.json" "$SOURCE/net/Kconfig" <<'PY'
 import json,re,sys
 from pathlib import Path
 def read(path):
@@ -107,6 +112,7 @@ python3 - "$W" "$VARIANT_CRC" "$REPORT" "$EVIDENCE/bpf-stream-parser-ab-config-d
 import json,sys
 from pathlib import Path
 w=Path(sys.argv[1]); variant=sys.argv[2].lower()
+control=json.loads((w/'kmi-evidence/sk_filter_trim_cap-control.json').read_text())
 config_delta=json.loads(Path(sys.argv[4]).read_text())
 only_expected=config_delta["only_expected_kconfig_changes"]
 symvers=(w/'kout/vmlinux.symvers').read_text()
@@ -126,7 +132,9 @@ if expected:expected='0x'+expected
 # The source branch is stable but other unpinned build-time integrations
 # can drift: require the control to match the exact booted #233 CRC.
 booted_233_crc='0x43eebd89'
-baseline_reproduced=(base==booted_233_crc)
+baseline_reproduced=(base==booted_233_crc and
+    control.get('control_matches_kernel_crc') is True and
+    not control.get('baseline_config_changes'))
 result={
     'schema_version':1,
     'status': ('BASELINE_NOT_REPRODUCED' if not baseline_reproduced
@@ -137,6 +145,9 @@ result={
     'compiled_kernel_crc':base,
     'booted_233_kernel_crc':booted_233_crc,
     'baseline_reproduced':baseline_reproduced,
+    'control_crc':control.get('local_control_crc'),
+    'control_status':control.get('status'),
+    'control_config_changes':control.get('baseline_config_changes'),
     'experimental_parser_off_crc':variant,
     'experiment':'requested CONFIG_BPF_STREAM_PARSER y -> n in isolated Kconfig',
     'only_requested_kconfig_changed':config_delta['only_requested_kconfig_changed'],
