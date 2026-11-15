@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/AutoFDO Offline Compare.yml'
       - 'tools/autofdo_offline_metrics.py'
+      - 'tools/autofdo_loader_diagnostics.py'
 
 permissions:
   contents: read
@@ -45,8 +46,9 @@ jobs:
 
       - name: Verify metrics and profile parsers
         run: |
-          python3 -m py_compile research-tools/tools/autofdo_offline_metrics.py research-tools/tools/autofdo_profile_match.py
+          python3 -m py_compile research-tools/tools/autofdo_offline_metrics.py research-tools/tools/autofdo_profile_match.py research-tools/tools/autofdo_loader_diagnostics.py
           python3 research-tools/tools/autofdo_profile_match.py selftest
+          python3 research-tools/tools/autofdo_loader_diagnostics.py selftest
 
       - name: 🧠 Add swap space (for LTO link)
         run: |
@@ -184,6 +186,21 @@ jobs:
 
           echo "Source and tools initialized successfully!"
 
+      - name: Preflight LLVM diagnostic options
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLANG_BIN="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin"
+          printf 'int test(void) { return 7; }\n' > /tmp/autofdo-diag-probe.c
+          "$CLANG_BIN/clang" -target aarch64-linux-gnu -c \
+            -mllvm -sample-profile-check-record-coverage=101 \
+            -mllvm -sample-profile-check-sample-coverage=101 \
+            /tmp/autofdo-diag-probe.c -o /tmp/autofdo-diag-probe.o
+          "$CLANG_BIN/ld.lld" --help > /tmp/autofdo-lld-help.txt
+          for flag in opt-remarks-filename opt-remarks-passes opt-remarks-with-hotness; do
+            grep -Fq -- "$flag" /tmp/autofdo-lld-help.txt || { echo "::error::LLD lacks $flag"; exit 1; }
+          done
+          echo 'Clang coverage and LLD remarks flags supported'
       - name: Cache ccache-ECS binary
         uses: actions/cache@v4
         id: ecs-cache
@@ -1018,17 +1035,36 @@ jobs:
           set -o pipefail
           : > /tmp/kbuild.log
 
-          # Proof of the sample profile reaching LLD (flags are supplied by Kbuild).
+          # Observe sample profile at link and capture ThinLTO inline decisions.
           cat > ld-wrapper <<'EOF'
           #!/usr/bin/env bash
+          output=''
+          previous=''
           for arg in "$@"; do
+            if [[ "$previous" == '-o' ]]; then
+              output="$arg"
+            fi
             case "$arg" in
               --lto-sample-profile=*)
                 printf '%s\n' "$arg" >> "$GITHUB_WORKSPACE/kout/autofdo-linker-args.log"
                 ;;
             esac
+            previous="$arg"
           done
-          exec ld.lld "$@" --thinlto-cache-dir="$LDCACHE_DIR" --thinlto-jobs="$(($(nproc --all) / 2))"
+          remark_opts=()
+          output_name="$(basename "$output")"
+          if [[ "$output_name" == vmlinux* ]]; then
+            mkdir -p "$GITHUB_WORKSPACE/analysis/$PROFILE_MODE/lto-remarks"
+            remarks_file="$GITHUB_WORKSPACE/analysis/$PROFILE_MODE/lto-remarks/$output_name-$.yaml"
+            remark_opts+=("--opt-remarks-filename=$remarks_file"
+              '--opt-remarks-passes=inline|sample-profile'
+              '--opt-remarks-format=yaml' '--opt-remarks-with-hotness')
+            if [[ "$PROFILE_MODE" == profiled ]]; then
+              remark_opts+=('--mllvm=-sample-profile-check-record-coverage=101'
+                '--mllvm=-sample-profile-check-sample-coverage=101')
+            fi
+          fi
+          exec ld.lld "$@" "${remark_opts[@]}" --thinlto-cache-dir="$LDCACHE_DIR" --thinlto-jobs="$(($(nproc --all) / 2))"
           EOF
           chmod +x ld-wrapper
 
@@ -1108,6 +1144,12 @@ jobs:
 
           # Check the resolved configuration and pass the profile via the
           # documented Kbuild variable, not via KCFLAGS.
+          # 101% forces per-function LLVM sample-coverage diagnostics,
+          # including full matches, without changing optimization policy.
+          AUTOFDO_DIAG_CFLAGS=''
+          if [[ "$PROFILE_MODE" == profiled ]]; then
+            AUTOFDO_DIAG_CFLAGS='-mllvm -sample-profile-check-record-coverage=101 -mllvm -sample-profile-check-sample-coverage=101'
+          fi
           AUTOFDO_MAKE_ARGS=()
           grep -qx "CONFIG_LTO_CLANG_THIN=y" "$CFG" || { echo "::error::ThinLTO not enabled in resolved Kconfig"; exit 1; }
           grep -qx "CONFIG_AUTOFDO_CLANG=y" "$CFG" || { echo "::error::AutoFDO not enabled in resolved Kconfig"; exit 1; }
@@ -1123,7 +1165,7 @@ jobs:
             CC="ccache clang" LD="$(pwd)/ld-wrapper" HOSTLD="$(pwd)/ld-wrapper" \
             O=$GITHUB_WORKSPACE/kout \
             "${AUTOFDO_MAKE_ARGS[@]}" \
-            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option ${EXTRA_CFLAGS:-} ${MAP}" \
+            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option ${EXTRA_CFLAGS:-} ${MAP} ${AUTOFDO_DIAG_CFLAGS}" \
             Image 2>&1 | tee -a /tmp/kbuild.log
           echo "$SECONDS" > "$GITHUB_WORKSPACE/build-duration.txt"
 
@@ -1193,6 +1235,18 @@ jobs:
           cat "$OUT/metrics.json" | python3 -c 'import sys,json; d=json.load(sys.stdin); [d.pop(k,None) for k in ("sections","top_text_symbols")]; print(json.dumps(d,indent=2))' >> "$GITHUB_STEP_SUMMARY"
           echo '~~~' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Parse LLVM sample coverage and ThinLTO inlining
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/analysis/$PROFILE_MODE"
+          python3 "$GITHUB_WORKSPACE/research-tools/tools/autofdo_loader_diagnostics.py" collect \
+            --mode "$PROFILE_MODE" --log /tmp/kbuild.log \
+            --remarks-dir "$OUT/lto-remarks" --output "$OUT"
+          # Do not upload raw multi-MB optimization remarks; only summaries.
+          du -h "$OUT"/lto-remarks/*.yaml 2>/dev/null | tail -n 10 || true
+          rm -rf "$OUT/lto-remarks"
       - name: Upload offline A/B variant data
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -1235,6 +1289,9 @@ jobs:
             --input-dir offline-input --output offline-report
           python3 research-tools/tools/autofdo_profile_match.py compare \
             --input-dir offline-input --output offline-report
+          python3 research-tools/tools/autofdo_loader_diagnostics.py compare \
+            --input-dir offline-input --output offline-report
+          cat offline-report/loader-inline-report.md >> "$GITHUB_STEP_SUMMARY"
           cat offline-report/summary.md >> "$GITHUB_STEP_SUMMARY"
           cat offline-report/profile-elf-comparison.md >> "$GITHUB_STEP_SUMMARY"
 
