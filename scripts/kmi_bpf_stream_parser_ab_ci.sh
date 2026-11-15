@@ -125,7 +125,7 @@ for row in symvers.splitlines():
 sys.path.insert(0,str(w/'kmi-tools/scripts'))
 import kmi_stg_crc_diff
 reference=kmi_stg_crc_diff.parse_stg(
-    (w/'kernel_workspace/common/android/abi_gki_aarch64.stg').read_text())
+    (w/'kernel_workspace/kmi-isolated-common/android/abi_gki_aarch64.stg').read_text())
 original=reference.get('sk_filter_trim_cap',set())
 expected=next(iter(original)).to_bytes(4,'big').hex() if len(original)==1 else None
 if expected:expected='0x'+expected
