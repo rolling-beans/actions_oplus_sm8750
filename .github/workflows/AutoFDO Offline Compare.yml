@@ -1,0 +1,1237 @@
+name: AutoFDO offline A/B (research only)
+run-name: AutoFDO ThinLTO A/B static experiment
+
+on:
+  push:
+    branches:
+      - research/autofdo-thinlto-a-b-20261115
+    paths:
+      - '.github/workflows/AutoFDO Offline Compare.yml'
+      - 'tools/autofdo_offline_metrics.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autofdo-offline-a-b-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai
+  ANDROID_VERSION: 'android15'
+  KERNEL_VERSION: '6.6'
+  KERNEL_NAME: 'android15-8-g29d86c5fc9dd-abogki428889875-4k'
+  KERNEL_FULL_VERSION: '6.6.144'
+  CCACHE_DISABLE: '1'
+
+jobs:
+  compare-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 140
+    strategy:
+      fail-fast: false
+      matrix:
+        profile_mode: [baseline, profiled]
+    env:
+      PROFILE_MODE: ${{ matrix.profile_mode }}
+    steps:
+      - name: Checkout research scripts only
+        uses: actions/checkout@v4
+        with:
+          path: research-tools
+          sparse-checkout: |
+            tools
+          persist-credentials: false
+
+      - name: Verify metrics script syntax
+        run: python3 -m py_compile research-tools/tools/autofdo_offline_metrics.py
+
+      - name: 🧠 Add swap space (for LTO link)
+        run: |
+          sudo fallocate -l 16G /mnt/swap_lto || sudo dd if=/dev/zero of=/mnt/swap_lto bs=1M count=16384
+          sudo chmod 600 /mnt/swap_lto
+          sudo mkswap /mnt/swap_lto
+          sudo swapon /mnt/swap_lto
+          echo "── swap after ──"; free -h
+
+      - name: Cache Clang
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: kernel_workspace/clang-r563880c
+          key: Linux-aosp-clang-clang-r563880c
+
+      - name: Cache build-tools
+        id: buildtools-cache
+        uses: actions/cache@v4
+        with:
+          path: kernel_workspace/build-tools
+          key: codelinaro-build-tools-ks-kernel-lnx-4.0
+
+      - name: Install dependencies & Init Source
+        run: |
+          echo "Relocating heavy folders for background deletion..."
+          sudo mv /usr/share/dotnet /usr/share/dotnet_trash 2>/dev/null || true
+          sudo mv /usr/local/lib/android /usr/local/lib/android_trash 2>/dev/null || true
+          sudo mv /opt/ghc /opt/ghc_trash 2>/dev/null || true
+          sudo mv /usr/lib/jvm /usr/lib/jvm_trash 2>/dev/null || true
+          (sudo nice -n 19 ionice -c 3 rm -rf /usr/share/dotnet_trash /usr/local/lib/android_trash /opt/ghc_trash /usr/lib/jvm_trash) &
+
+          rm -rf kernel_workspace/common kernel_workspace/out 2>/dev/null || true
+          mkdir -p kernel_workspace/clang-r563880c kernel_workspace/build-tools
+          cd kernel_workspace
+
+          sudo apt-get install -y --no-install-recommends -o Dpkg::Use-Pty=0 \
+            libelf-dev dos2unix pahole cmake &
+
+          echo "Cloning source repository..."
+          curl -fL https://github.com/palazik/android_kernel_common_oneplus_sm8750/archive/7c4d3772a8db0a7ba1f010ffe87fa9e5cfbd237b.zip \
+            -o common.zip &&
+          unzip -q common.zip &&
+          mv android_kernel_common_oneplus_sm8750-* common &&
+          rm -f common.zip &
+
+          if [ "${{ steps.clang-cache.outputs.cache-hit }}" != "true" ]; then
+            echo "Cache miss — downloading clang-r563880c..."
+            mkdir -p clang-r563880c
+            aria2c -x16 -s16 -k1M -j16 --retry-wait=5 --max-tries=10 \
+              -d /tmp -o clang-r563880c.tar.gz \
+              "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-qpr2-release/clang-r563880c.tar.gz"
+            tar -C clang-r563880c -zxf /tmp/clang-r563880c.tar.gz
+            rm -f /tmp/clang-r563880c.tar.gz
+          else
+            echo "Clang restored from cache, skipping download."
+          fi &
+
+          if [ "${{ steps.buildtools-cache.outputs.cache-hit }}" != "true" ]; then
+            echo "Cache miss — cloning build-tools..."
+            git clone --depth=1 -b ks-kernel.lnx.4.0.r1-rel \
+              https://git.codelinaro.org/clo/la/kernel/prebuilts/build-tools.git build-tools
+          else
+            echo "build-tools restored from cache, skipping clone."
+          fi &
+
+          wait
+
+          echo "Removing ABI protection & dirty suffix..."
+          rm common/android/abi_gki_protected_exports_* || true
+          for f in common/scripts/setlocalversion; do
+            sed -i 's/ -dirty//g' "$f"
+            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
+          done
+
+          # Google GKI already publishes an extbinary sample profile.
+          # --prof_sym_list=false is a create_llvm_prof profile GENERATION option,
+          # not a Clang/LLD build flag. When generating a custom profile use:
+          # create_llvm_prof --profiler=text --binary=vmlinux --profile=kernel.autofdo \
+          #   --format=extbinary --use_fs_discriminator --out=kernel.afdo --prof_sym_list=false
+          # https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/README.md
+          #
+          # Fail closed instead of silently producing an unprofiled ThinLTO Image.
+          AFDO_OUT="$GITHUB_WORKSPACE/kernel.afdo"
+          AFDO_B64="$GITHUB_WORKSPACE/kernel.afdo.b64"
+          rm -f "$AFDO_B64" "$AFDO_OUT"
+          echo "AUTOFDO_PROFILE=" >> "$GITHUB_ENV"
+
+          if [[ "thin" == "thin" ]]; then
+            AFDO_URL="https://android.googlesource.com/kernel/common/+/refs/heads/android15-6.6/android/gki/aarch64/afdo/kernel.afdo?format=TEXT"
+            echo "Downloading pre-generated Android GKI 6.6 AutoFDO sample profile..."
+            AFDO_HTTP_STATUS=$(curl -sS -L \
+              --retry 3 \
+              --retry-all-errors \
+              --retry-delay 2 \
+              --connect-timeout 20 \
+              --max-time 180 \
+              -o "$AFDO_B64" \
+              -w '%{http_code}' \
+              "$AFDO_URL" || true)
+            if [[ "$AFDO_HTTP_STATUS" != "200" ]]; then
+              echo "::error title=AutoFDO profile unavailable::HTTP $AFDO_HTTP_STATUS; refusing an unprofiled ThinLTO build"
+              exit 1
+            fi
+
+            if ! tr -d '\r\n' < "$AFDO_B64" | base64 -d > "$AFDO_OUT" || [[ ! -s "$AFDO_OUT" ]]; then
+              echo "::error title=Invalid AutoFDO profile::Base64 decode failed or profile is empty"
+              exit 1
+            fi
+            rm -f "$AFDO_B64"
+            LLVM_PROFDATA="$GITHUB_WORKSPACE/kernel_workspace/clang-r563880c/bin/llvm-profdata"
+            if [[ ! -x "$LLVM_PROFDATA" ]]; then
+              echo "::error title=Missing LLVM profiler::llvm-profdata not found in the AOSP Clang toolchain"
+              exit 1
+            fi
+            if ! "$LLVM_PROFDATA" show --sample "$AFDO_OUT" > "$GITHUB_WORKSPACE/autofdo-profile-summary.txt" 2>&1; then
+              echo "::error title=Invalid AutoFDO sample profile::llvm-profdata could not parse kernel.afdo"
+              cat "$GITHUB_WORKSPACE/autofdo-profile-summary.txt"
+              exit 1
+            fi
+
+            AFDO_SHA256=$(sha256sum "$AFDO_OUT" | cut -d ' ' -f1)
+            echo "AUTOFDO_PROFILE=$AFDO_OUT" >> "$GITHUB_ENV"
+            echo "AutoFDO profile validated (size $(wc -c < "$AFDO_OUT") bytes; SHA256 $AFDO_SHA256)"
+            {
+              echo "### AutoFDO profile"
+              echo "- Source: $AFDO_URL"
+              echo "- SHA256: $AFDO_SHA256"
+              echo "- Format: LLVM sample profile, checked with llvm-profdata"
+              echo "- Mode: AutoFDO + ThinLTO (native kernel Kbuild integration)"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "AutoFDO disabled: lto_type=thin; only enabled with ThinLTO"
+          fi
+
+          echo "Source and tools initialized successfully!"
+
+      - name: Cache ccache-ECS binary
+        uses: actions/cache@v4
+        id: ecs-cache
+        with:
+          path: /tmp/ccache-ecs-bin
+          key: ccache-ecs-${{ runner.os }}-084a7620
+
+      - name: Build & Install ccache-ECS
+        run: |
+          if [ -f /tmp/ccache-ecs-bin/ccache ]; then
+            echo "ECS binary cached, skipping build"
+            sudo cp /tmp/ccache-ecs-bin/ccache /usr/local/bin/ccache
+          else
+            sudo apt-get install -y --no-install-recommends cmake
+            git clone --depth=1 https://github.com/cctv18/ccache-ECS.git /tmp/ccache-ecs
+            cd /tmp/ccache-ecs
+            ./ci/build-binary
+            mkdir -p /tmp/ccache-ecs-bin
+            cp install/ccache /tmp/ccache-ecs-bin/ccache
+            sudo cp /tmp/ccache-ecs-bin/ccache /usr/local/bin/ccache
+          fi
+          sudo chmod 755 /usr/local/bin/ccache
+          echo "/usr/local/bin" >> $GITHUB_PATH
+          echo "✅ ECS ccache: $(/usr/local/bin/ccache --version | head -1)"
+
+      - name: Save ccache-ECS binary cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: /tmp/ccache-ecs-bin
+          key: ccache-ecs-${{ runner.os }}-084a7620
+
+      - name: Configure CCache Directory
+        run: |
+          echo "CCACHE_KEY=ccache-neov4-${{ env.KERNEL_FULL_VERSION }}" >> $GITHUB_ENV
+          echo "CCACHE_DIR=$HOME/.ccache_${{ env.KERNEL_FULL_VERSION }}" >> $GITHUB_ENV
+          echo "LDCACHE_DIR=$GITHUB_WORKSPACE/ldcache_${{ env.KERNEL_FULL_VERSION }}" >> $GITHUB_ENV
+          mkdir -p $GITHUB_WORKSPACE/ldcache_${{ env.KERNEL_FULL_VERSION }}
+          echo "CCACHE_MAXSIZE=10G" >> $GITHUB_ENV
+          echo "Current Disk Space:"
+          df -h
+          echo "Current Build Kernel Version: ${{ env.KERNEL_FULL_VERSION }}"
+
+      - name: Init and Config CCache
+        run: |
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          mkdir -p "$CCACHE_DIR"
+
+          ccache -M "${{ env.CCACHE_MAXSIZE }}"
+          ccache -o compression=true
+          ccache -o compiler_check=none
+          ccache -o hash_dir=false
+          ccache -o direct_mode=true
+          ccache -o depend_mode=false
+          ccache -o base_dir="${{ github.workspace }}"
+          ccache -o sloppiness=file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros,locale
+
+          echo "Initial CCache status:"
+          ccache -s
+
+          echo "Updating atime to achieve cache eviction..."
+          find "${{ env.CCACHE_DIR }}" -type f -exec touch -t $(date -d "1 day ago" +%Y%m%d%H%M) {} + || true
+
+      - name: ⚡ Setup ReSukiSU
+        if: ${{ 'ReSukiSU' == 'ReSukiSU' }}
+        run: |
+          cd kernel_workspace/common
+          echo "🛠️ Setting up ReSukiSU (main)..."
+          curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s main
+          cd KernelSU
+          KSU_VERSION_COUNT=$(git rev-list --count HEAD)
+          export KSUVER=$(expr $KSU_VERSION_COUNT + 37185)
+          echo "KSUVER=$KSUVER" >> $GITHUB_ENV
+          echo "✅ ReSukiSU $(git rev-parse --short HEAD) (ver $KSUVER)"
+
+      - name: 📥 Checkout ReSukiSU CI patch helper
+        if: ${{ 'ReSukiSU' == 'ReSukiSU' }}
+        uses: actions/checkout@v4
+        with:
+          path: ci-tools
+          sparse-checkout: |
+            .github/scripts
+          persist-credentials: false
+
+      - name: 🔧 ReSukiSU policydb.len — apply or verify upstream
+        if: ${{ 'ReSukiSU' == 'ReSukiSU' }}
+        id: bakasu_policydb_len
+        # Script writes APPLIED/SKIPPED_UPSTREAM/FAILED to log, annotations and Job Summary.
+        # Unknown upstream implementations fail the build rather than double-patching.
+        run: |
+          cd kernel_workspace/common
+          python3 "${GITHUB_WORKSPACE}/ci-tools/.github/scripts/patch_bakasu_policydb_len.py" KernelSU
+          git -C KernelSU diff --check
+          git -C KernelSU diff --stat
+
+      - name: ⚡ Setup SukiSU Ultra
+        if: ${{ 'ReSukiSU' == 'SukiSU Ultra' }}
+        run: |
+          cd kernel_workspace/common
+          echo "🛠️ Setting up SukiSU Ultra (builtin)..."
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s builtin
+          cd KernelSU
+          KSU_VERSION_COUNT=$(git rev-list --count HEAD)
+          export KSUVER=$(expr $KSU_VERSION_COUNT + 37185)
+          echo "KSUVER=$KSUVER" >> $GITHUB_ENV
+          KSU_API_VERSION=$(grep -E "^KSU_VERSION[[:space:]]*=" "../Makefile" | cut -d'=' -f2 | tr -d '[:space:]')
+          [ -z "$KSU_API_VERSION" ] && KSU_API_VERSION="12800"
+          KSU_COMMIT_HASH=$(git rev-parse --short=8 HEAD)
+          KBUILD_FILE="kernel/Makefile"
+          [ -f "kernel/Kbuild" ] && KBUILD_FILE="kernel/Kbuild"
+          sed -i 's/-DKSU_VERSION_FULL=[^ ]*//g' "$KBUILD_FILE"
+          sed -i '/KSU_VERSION_FULL/d' "$KBUILD_FILE"
+          cat >> "$KBUILD_FILE" <<EOF
+          ccflags-y += -DKSU_VERSION_FULL=\"v${KSU_API_VERSION}-${KSU_COMMIT_HASH}@palaziks\"
+          EOF
+          echo "✅ SukiSU $KSUVER (v${KSU_API_VERSION}-${KSU_COMMIT_HASH}@palaziks)"
+
+      - name: ⚡ Setup KernelSU
+        if: ${{ 'ReSukiSU' == 'KernelSU' }}
+        run: |
+          cd kernel_workspace/common
+          echo "🛠️ Setting up KernelSU..."
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+          cd KernelSU
+          git fetch --force origin main
+          git checkout -B main origin/main
+          KSU_GIT_VERSION=$(git rev-list --count origin/main)
+          export KSUVER=$(expr 10000 + $KSU_GIT_VERSION + 200)
+          echo "KSUVER=$KSUVER" >> $GITHUB_ENV
+          echo "✅ KernelSU $(git describe --tags 2>/dev/null || git rev-parse --short HEAD)  (ver $KSUVER)"
+
+      - name: ⚡ Setup KernelSU Next
+        if: ${{ 'ReSukiSU' == 'KernelSU Next' }}
+        run: |
+          cd kernel_workspace/common
+          echo "🛠️ Setting up KernelSU-Next (dev branch)..."
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s dev
+          cd KernelSU-Next
+          KSU_GIT_VERSION=$(git rev-list --count HEAD)
+          export KSUVER=$(expr 10000 + $KSU_GIT_VERSION + 200)
+          echo "KSUVER=$KSUVER" >> $GITHUB_ENV
+          echo "✅ KernelSU-Next $(git describe --tags 2>/dev/null || git rev-parse --short HEAD)  (ver $KSUVER)"
+
+      - name: 🔧 Setup Patches
+        run: |
+          cd kernel_workspace
+          if [ "true" == "true" ]; then
+            git clone --depth=1 -b gki-android15-6.6 https://gitlab.com/simonpunk/susfs4ksu.git &
+          fi
+          git clone --depth=1 https://github.com/mrcxlinux/kernel_patches.git &
+          git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git &
+          git clone --depth=1 https://github.com/palazik/kernel_patches.git wildkernels_patches &
+          wait
+
+          if [ "true" == "true" ]; then
+            cp susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
+            cp susfs4ksu/kernel_patches/fs/* ./common/fs/
+            cp susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+          fi
+
+          cd ./common
+          cp ../kernel_patches/common/EnablePOLLY.patch ./
+          git apply -p1 < EnablePOLLY.patch || true
+          echo "✅ Base patches applied"
+
+      - name: 📦 Apply SUSFS (ReSukiSU / SukiSU Ultra)
+        if: ${{ true && ('ReSukiSU' == 'ReSukiSU' || 'ReSukiSU' == 'SukiSU Ultra') }}
+        working-directory: kernel_workspace/common
+        run: |
+          echo "📦 Pre-patch fixups (fatalcoder android15-6.6 method)..."
+          if ! grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
+            sed -i -e '/int ret = 0, copied = 0;/a \\tunsigned int nr_subpages \= __PAGE_SIZE \/ PAGE_SIZE;' \
+                   -e '/int ret = 0, copied = 0;/a \\tpagemap_entry_t \*res = NULL;' ./fs/proc/task_mmu.c
+          fi
+          if ! grep -qxF '#include <linux/dma-buf.h>' ./fs/proc/base.c; then
+            sed -i '/#include <linux\/cpufreq_times.h>/a #include <linux\/dma-buf.h>' ./fs/proc/base.c
+          fi
+          if ! grep -qxF '#include <linux/zswap.h>' ./mm/memory.c; then
+            sed -i '/#include <linux\/sched\/sysctl\.h>/a #include <linux\/zswap.h>' ./mm/memory.c
+          fi
+          if grep -qF 'if (vma->vm_end > last_vma_end)' ./fs/proc/task_mmu.c \
+             && ! grep -qF 'if (vma->vm_end > last_vma_end) {' ./fs/proc/task_mmu.c; then
+            perl -i -0pe 's/\t\t\tif \(vma->vm_end > last_vma_end\)\n\t\t\t\tsmap_gather_stats\(vma, &mss, last_vma_end\);/\t\t\tif (vma->vm_end > last_vma_end) {\n\t\t\t\tsmap_gather_stats(vma, \&mss, last_vma_end);\n\t\t\t\tlast_vma_end = vma->vm_end;\n\t\t\t}/' ./fs/proc/task_mmu.c
+          fi
+
+          echo "📦 Applying 50_ with --forward (by-design rejects skip cleanly)..."
+          patch -p1 --forward < 50_add_susfs_in_gki-android15-6.6.patch || true
+
+          grep -q "SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))" fs/proc/task_mmu.c \
+            || { echo "❌ SUS_MAP guard missing — real failure"; exit 1; }
+          echo "✅ SUSFS applied (fatalcoder method)"
+
+      - name: 📦 Apply SUSFS (KernelSU)
+        if: ${{ true && 'ReSukiSU' == 'KernelSU' }}
+        working-directory: kernel_workspace/common
+        run: |
+          cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./KernelSU/
+          echo "📦 Enabling SUSFS inside KernelSU..."
+          ( cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch )
+          echo "📦 Applying SUSFS kernel patch..."
+          patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch
+
+      - name: 📦 Apply SUSFS (KernelSU Next)
+        if: ${{ true && 'ReSukiSU' == 'KernelSU Next' }}
+        working-directory: kernel_workspace/common
+        run: |
+          cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./KernelSU-Next/
+          FIX_DIR="../wildkernels_patches/next/susfs_fix_patches/v2.2.0"
+
+          echo "📦 [1/3] Applying 10_enable_susfs_for_ksu (KSUN-specific rejects are expected)..."
+          ( cd KernelSU-Next && patch -p1 --forward < 10_enable_susfs_for_ksu.patch || true )
+
+          echo "📦 [2/3] Applying WildKernels KSUN fix patches (v2.2.0)..."
+          for p in \
+            fix_Kbuild.patch \
+            fix_init.c.patch \
+            fix_kernel_umount.c.patch \
+            fix_setuid_hook.c.patch \
+            fix_sucompat.c.patch \
+            fix_supercall.c.patch \
+            ksu_toolkit.patch \
+            overwrite_hook_mode.patch; do
+            if [ -f "$FIX_DIR/$p" ]; then
+              ( cd KernelSU-Next && patch -p1 --forward < "../$FIX_DIR/$p" ) \
+                && echo "  ✅ $p" || echo "  ⚠️ $p (skipped/conflict)"
+            else
+              echo "  ⚠️ $p not found"
+            fi
+          done
+
+          echo "📦 [3/3] Applying 50_add_susfs kernel patch..."
+          patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch
+
+      - name: ⚙️ Configure Kernel Options
+        run: |
+          cd kernel_workspace
+          DEFCONFIG="./common/arch/arm64/configs/gki_defconfig"
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+          case "ReSukiSU" in
+            "ReSukiSU")
+              echo 'CONFIG_KSU_FULL_NAME_FORMAT="v%KSU_VERSION%-%COMMIT_SHA%@palaziks"' >> "$DEFCONFIG"
+              ;;
+            "SukiSU Ultra")
+              echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$DEFCONFIG"
+              ;;
+            "KernelSU")
+              echo "CONFIG_KPROBES=y" >> "$DEFCONFIG"
+              echo "CONFIG_HAVE_KPROBES=y" >> "$DEFCONFIG"
+              echo "CONFIG_KPROBE_EVENTS=y" >> "$DEFCONFIG"
+              ;;
+            "KernelSU Next")
+              echo "CONFIG_EXT4_FS=y" >> "$DEFCONFIG"
+              ;;
+          esac
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
+          echo "CONFIG_CIFS=y" >> "$DEFCONFIG"
+          echo "CONFIG_NETWORK_FILESYSTEMS=y" >> "$DEFCONFIG"
+          echo "CONFIG_NETFS_SUPPORT=y" >> "$DEFCONFIG"
+          echo "CONFIG_KEYS=y" >> "$DEFCONFIG"
+          echo "CONFIG_CIFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_CIFS_POSIX=y" >> "$DEFCONFIG"
+          echo "CONFIG_NET_SCH_FQ=y" >> "$DEFCONFIG"
+          echo "CONFIG_NET_SCH_FQ_CODEL=y" >> "$DEFCONFIG"
+          echo "CONFIG_NET_SCH_CAKE=y" >> "$DEFCONFIG"
+          echo "CONFIG_NET_ACT_CONNMARK=y" >> "$DEFCONFIG"
+          echo "CONFIG_TCP_CONG_BIC=y" >> "$DEFCONFIG"
+
+          if [[ "true" == "true" ]]; then
+            echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_LZ4HC=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_LZ4K=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_LZ4KD=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_842=y" >> "$DEFCONFIG"
+          fi
+
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "$DEFCONFIG"
+          sed -i 's/check_defconfig//' ./common/build.config.gki
+          echo "CONFIG_HEADERS_INSTALL=n" >> "$DEFCONFIG"
+
+          echo "CONFIG_LLVM_POLLY=y" >> "$DEFCONFIG"
+          if [[ "true" == "true" ]]; then
+            echo "📦 Enabling BTF/eBPF/FUSE-BPF stack..."
+            echo "CONFIG_DEBUG_INFO_BTF=y" >> "$DEFCONFIG"
+            echo "CONFIG_BPF_EVENTS=y" >> "$DEFCONFIG"
+            echo "CONFIG_KPROBE_EVENTS=y" >> "$DEFCONFIG"
+            echo "CONFIG_UPROBES=y" >> "$DEFCONFIG"
+            echo "CONFIG_UPROBE_EVENTS=y" >> "$DEFCONFIG"
+            echo "CONFIG_FUSE_FS=y" >> "$DEFCONFIG"
+            echo "CONFIG_BPF_SYSCALL=y" >> "$DEFCONFIG"
+            echo "CONFIG_FUSE_BPF=y" >> "$DEFCONFIG"
+            echo "CONFIG_BPF=y" >> "$DEFCONFIG"
+            echo "CONFIG_BPF_JIT=y" >> "$DEFCONFIG"
+            echo "CONFIG_CGROUP_BPF=y" >> "$DEFCONFIG"
+            echo "CONFIG_CGROUP_BPF=y" >> "$DEFCONFIG"
+            echo "CONFIG_NET_CLS_ACT=y" >> "$DEFCONFIG"
+            echo "CONFIG_NET_ACT_BPF=y" >> "$DEFCONFIG"
+            echo "CONFIG_FUSE_FS=y" >> "$DEFCONFIG"
+            echo "CONFIG_FUSE_PASSTHROUGH=y" >> "$DEFCONFIG"
+          else
+            echo "BTF/eBPF/FUSE-BPF stack disabled"
+          fi
+
+          echo "CONFIG_LD_DEAD_CODE_DATA_ELIMINATION=y" >> "$DEFCONFIG"
+
+          if [ "true" == "true" ]; then
+            echo "📦 Enabling SUSFS features..."
+            echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
+            case "ReSukiSU" in
+              "SukiSU Ultra")
+                echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> "$DEFCONFIG"
+                echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> "$DEFCONFIG"
+                echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> "$DEFCONFIG"
+                echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
+                echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> "$DEFCONFIG"
+                echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n" >> "$DEFCONFIG"
+                echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> "$DEFCONFIG"
+                ;;
+              "KernelSU Next")
+                echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
+                ;;
+            esac
+          fi
+
+
+          ./common/scripts/config --file "$DEFCONFIG" \
+            --disable ZRAM_WRITEBACK \
+            --enable ZRAM \
+            --enable ZSMALLOC \
+            --enable ZRAM_MULTI_COMP \
+            --enable EXT4_FS
+          ./common/scripts/config --file "$DEFCONFIG" \
+            --disable HZ_100 \
+            --disable HZ_250 \
+            --enable HZ_300 \
+            --disable HZ_1000
+
+          for option in \
+              NETWORK_FILESYSTEMS \
+              NFS_FS \
+              NFS_V2 \
+              NFS_V3 \
+              NFS_V4 \
+              NFS_V4_1 \
+              NFS_V4_2 \
+              NFSD \
+              NFSD_V2 \
+              NFSD_V4 \
+              NFS_V3_ACL \
+              NFSD_V3_ACL \
+              NFS_V4_2_READ_PLUS
+          do
+              ./common/scripts/config --file "$DEFCONFIG" --enable "$option"
+          done
+
+      - name: ⚡ Setup NoMount
+        run: |
+          cd kernel_workspace/common
+          echo "🛠️ Setting up NoMount (builtin)..."
+          curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
+
+
+      - name: Apply LZ4 1.10.0 & ZSTD 1.5.7 Patches
+        if: ${{ true }}
+        run: |
+          echo "Adding LZ4 & ZSTD patches..."
+          cd kernel_workspace/common
+
+          cp ../kernel_patches/zram/001-lz4.patch ./
+          cp ../kernel_patches/zram/002-zstd.patch ./
+
+          # 001-lz4.patch requires a terminating empty line after GIT binary patch
+          printf '\n' >> 001-lz4.patch
+
+          # Existing OnePlus source has an extra export which conflicts with 001-lz4.patch
+          sed -i '/^EXPORT_SYMBOL(LZ4_resetStreamHC);$/d' lib/lz4/lz4hc_compress.c
+
+          git apply -p1 < 001-lz4.patch
+
+          # 002-zstd.patch contains one obsolete x86-only hunk in
+          # lib/zstd/common/portability_macros.h. Remove only that hunk.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("002-zstd.patch")
+          s = p.read_text()
+
+          start = (
+              "diff --git a/lib/zstd/common/portability_macros.h "
+              "b/lib/zstd/common/portability_macros.h"
+          )
+          pos = s.index(start)
+
+          next_file = s.find("\ndiff --git ", pos + len(start))
+          if next_file == -1:
+              next_file = len(s)
+
+          block = s[pos:next_file]
+
+          hunk_start = block.index("@@ -45,30 +46,35 @@")
+          next_hunk = block.find("\n@@ ", hunk_start + 1)
+
+          if next_hunk == -1:
+              raise RuntimeError("Could not locate end of portability_macros.h hunk #3")
+
+          block = block[:hunk_start] + block[next_hunk + 1:]
+          s = s[:pos] + block + s[next_file:]
+
+          p.write_text(s)
+          PY
+
+          patch -p1 < 002-zstd.patch
+
+          if find . -name '*.rej' -print -quit | grep -q .; then
+            echo "ERROR: patch rejects found"
+            find . -name '*.rej' -print
+            exit 1
+          fi
+
+      - name: Apply LZ4KD Patch
+        if: ${{ true }}
+        run: |
+          echo "Adding LZ4KD patch..."
+          cd kernel_workspace/common
+          cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./include/linux/
+          cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./lib
+          cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./crypto
+          cp ../SukiSU_patch/other/zram/zram_patch/${{ env.KERNEL_VERSION }}/lz4kd.patch ./
+          patch -p1 -F 3 < lz4kd.patch
+          
+      - name: ⚙️ Configure Fengchi (HMBIRD)
+        working-directory: kernel_workspace/common
+        run: |
+          DEFCONFIG=arch/arm64/configs/gki_defconfig
+          sed -i '/^CONFIG_HMBIRD_SCHED=/d; /^# CONFIG_HMBIRD_SCHED is not set/d' "$DEFCONFIG"
+          if [ "true" == "true" ]; then
+            if [ ! -d kernel/sched/hmbird ]; then
+              echo "::error::kernel/sched/hmbird is missing from the kernel source"
+              exit 1
+            fi
+            echo "CONFIG_HMBIRD_SCHED=y" >> "$DEFCONFIG"
+            echo "✅ Fengchi enabled"
+          else
+            echo "CONFIG_HMBIRD_SCHED=n" >> "$DEFCONFIG"
+            echo "Fengchi disabled"
+          fi
+
+      - name: Prepare CPU Optimizations (Oryon SM8750)
+        if: ${{ true }}
+        run: |
+          echo "EXTRA_CFLAGS=-mcpu=oryon-1" >> $GITHUB_ENV
+          echo "✅ Oryon flags prepared."
+
+      - name: Apply Unicode Bypass Fix
+        working-directory: kernel_workspace/common
+        run: |
+          PATCH_URL="https://github.com/palazik/kernel_patches/raw/main/common/unicode_bypass_fix_6.1+.patch"
+          wget -qO /tmp/ub_fix.patch "$PATCH_URL" 2>/dev/null && \
+            patch -p1 --forward < /tmp/ub_fix.patch || true
+          echo "Unicode fix applied"
+
+      - name: Apply BORE Scheduler
+        if: ${{ true }}
+        working-directory: kernel_workspace/common
+        run: |
+          echo "CONFIG_SCHED_BORE=y" >> arch/arm64/configs/gki_defconfig
+          BORE_URL="https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/patches/bore.patch"
+          wget -qO /tmp/bore.patch "$BORE_URL"
+          patch -p1 -F 3 < /tmp/bore.patch
+          echo "✅ BORE scheduler applied"
+
+      - name: Apply Memory & Scheduler Optimization Patches
+        if: ${{ true }}
+        working-directory: kernel_workspace/common
+        run: |
+          echo "Applying WildKernels optimization patches..."
+          PATCHES_DIR="../wildkernels_patches/common"
+
+          apply_patch() {
+            local patch="$1"
+            if [ -f "$PATCHES_DIR/$patch" ]; then
+              patch -p1 --forward < "$PATCHES_DIR/$patch" && \
+                echo "✅ $patch" || echo "⚠️ $patch (skipped/conflict)"
+            else
+              echo "⚠️ $patch not found, skipping"
+            fi
+          }
+
+          apply_patch "optimized_mem_operations.patch"
+          apply_patch "file_struct_8bytes_align.patch"
+          apply_patch "reduce_cache_pressure.patch"
+          apply_patch "mem_opt_prefetch.patch"
+          apply_patch "optimise_memcmp.patch"
+          apply_patch "minimise_wakeup_time.patch"
+          apply_patch "int_sqrt.patch"
+          apply_patch "reduce_gc_thread_sleep_time.patch"
+          apply_patch "add_timeout_wakelocks_globally.patch"
+          apply_patch "f2fs_reduce_congestion.patch"
+          apply_patch "reduce_freeze_timeout.patch"
+          apply_patch "clear_page_16bytes_align.patch"
+          apply_patch "add_limitation_scaling_min_freq.patch"
+          apply_patch "re_write_limitation_scaling_min_freq.patch"
+          apply_patch "adjust_cpu_scan_order.patch"
+          apply_patch "avoid_extra_s2idle_wake_attempts.patch"
+          apply_patch "disable_cache_hot_buddy.patch"
+          apply_patch "f2fs_enlarge_min_fsync_blocks.patch"
+          apply_patch "increase_ext4_default_commit_age.patch"
+          apply_patch "increase_sk_mem_packets.patch"
+          apply_patch "reduce_pci_pme_wakeups.patch"
+          apply_patch "silence_irq_cpu_logspam.patch"
+          apply_patch "silence_system_logspam.patch"
+          apply_patch "use_unlikely_wrap_cpufreq.patch"
+
+          echo "✅ Optimization patches applied"
+
+      - name: Apply NTSync Patch
+        if: ${{ true }}
+        working-directory: kernel_workspace/common
+        run: |
+          echo "Enabling NTSync (NT kernel sync primitives)..."
+          NTSYNC_DIR="../wildkernels_patches/common/ntsync"
+
+          NTSYNC_PATCH=""
+          for candidate in \
+            "$NTSYNC_DIR/ntsync_compat_android15-6.6.patch" \
+            "$NTSYNC_DIR/ntsync_compat_android15-6.6_OOS16.patch" \
+            "$NTSYNC_DIR/ntsync_compat_android15-6.6_OOS15.patch"; do
+            if [ -f "$candidate" ]; then
+              NTSYNC_PATCH="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$NTSYNC_PATCH" ]; then
+            echo "⚠️ NTSync compat patch for android15-6.6 not found in wildkernels_patches."
+            echo "   Falling back to upstream ntsync driver (mainline backport)..."
+            if [ -f "$NTSYNC_DIR/ntsync_base.patch" ]; then
+              patch -p1 --forward < "$NTSYNC_DIR/ntsync_base.patch" || true
+            else
+              echo "::warning::NTSync base patch also not found. Skipping NTSync."
+              exit 0
+            fi
+          else
+            echo "Using: $(basename $NTSYNC_PATCH)"
+            patch -p1 --forward < "$NTSYNC_PATCH" || true
+            if [ -f "$NTSYNC_DIR/ntsync_base.patch" ]; then
+              patch -p1 --forward < "$NTSYNC_DIR/ntsync_base.patch" || true
+            fi
+          fi
+
+          echo "CONFIG_NTSYNC=y" >> arch/arm64/configs/gki_defconfig
+          echo "✅ NTSync enabled"
+
+      - name: Add Droidspaces Support
+        if: ${{ true }}
+        working-directory: kernel_workspace/common
+        run: |
+          echo "Enabling Droidspaces (portable Linux containers)..."
+          DS_DIR="../wildkernels_patches/common/droidspaces"
+
+          if [ -f "$DS_DIR/fix_sysvipc_kabi_6_7_8.patch" ]; then
+            patch -p1 --forward < "$DS_DIR/fix_sysvipc_kabi_6_7_8.patch" || true
+          else
+            echo "⚠️ fix_sysvipc_kabi_6_7_8.patch not found, skipping KABI fix"
+          fi
+
+          if [ -f "$DS_DIR/0001-Return-ghost-task-if-task-is-null-and-is-requested-b.patch" ]; then
+            patch -p1 --forward < "$DS_DIR/0001-Return-ghost-task-if-task-is-null-and-is-requested-b.patch" || true
+          fi
+
+          cat >> arch/arm64/configs/gki_defconfig << 'EOF'
+          CONFIG_SYSVIPC=y
+          CONFIG_DEVTMPFS=y
+          CONFIG_PID_NS=y
+          CONFIG_POSIX_MQUEUE=y
+          CONFIG_NETFILTER_XT_TARGET_REJECT=y
+          CONFIG_NETFILTER_XT_TARGET_LOG=y
+          CONFIG_NETFILTER_XT_MATCH_RECENT=y
+          CONFIG_USER_NS=y
+          CONFIG_UNIX_DIAG=y
+          CONFIG_PROC_CHILDREN=y
+          EOF
+
+          # GKI vendor-module KMI: CFS bandwidth and PIDs controller are not safe with stock modules.
+          ./scripts/config --file arch/arm64/configs/gki_defconfig \
+            --enable CGROUPS \
+            --enable CGROUP_SCHED \
+            --enable FAIR_GROUP_SCHED \
+            --disable CFS_BANDWIDTH \
+            --disable CGROUP_PIDS \
+            --enable MACVLAN
+          echo "✅ Droidspaces support enabled"
+
+      - name: Add IP_SET + IPv6 NAT Support
+        if: ${{ true }}
+        working-directory: kernel_workspace/common
+        run: |
+          echo "Enabling IP_SET + IPv6 NAT..."
+          echo "CONFIG_BPF_STREAM_PARSER=y" >> arch/arm64/configs/gki_defconfig
+          cat >> arch/arm64/configs/gki_defconfig << 'EOF'
+          CONFIG_IP_SET=y
+          CONFIG_IP_SET_MAX=65534
+          CONFIG_IP_SET_BITMAP_IP=y
+          CONFIG_IP_SET_BITMAP_IPMAC=y
+          CONFIG_IP_SET_BITMAP_PORT=y
+          CONFIG_IP_SET_HASH_IP=y
+          CONFIG_IP_SET_HASH_IPMARK=y
+          CONFIG_IP_SET_HASH_IPPORT=y
+          CONFIG_IP_SET_HASH_IPPORTIP=y
+          CONFIG_IP_SET_HASH_IPPORTNET=y
+          CONFIG_IP_SET_HASH_IPMAC=y
+          CONFIG_IP_SET_HASH_MAC=y
+          CONFIG_IP_SET_HASH_NETPORTNET=y
+          CONFIG_IP_SET_HASH_NET=y
+          CONFIG_IP_SET_HASH_NETNET=y
+          CONFIG_IP_SET_HASH_NETPORT=y
+          CONFIG_IP_SET_HASH_NETIFACE=y
+          CONFIG_IP_SET_LIST_SET=y
+          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+          CONFIG_NETFILTER_XT_SET=y
+          CONFIG_IP6_NF_NAT=y
+          CONFIG_IP6_NF_TARGET_MASQUERADE=y
+          EOF
+
+          IPNAT_FIX="../wildkernels_patches/common/IPv6_NAT_FIX.patch"
+          if [ -f "$IPNAT_FIX" ]; then
+            patch -p1 -F 3 < "$IPNAT_FIX" || true
+            echo "✅ IPv6 NAT fix applied"
+          else
+            echo "⚠️ IPv6_NAT_FIX.patch not found, skipping"
+          fi
+          echo "✅ IP_SET + IPv6 NAT enabled"
+
+      - name: Add TTL/HL Target Support
+        if: ${{ true }}
+        working-directory: kernel_workspace/common
+        run: |
+          echo "Enabling TTL/HL Target (hide tethering from carrier)..."
+          cat >> arch/arm64/configs/gki_defconfig << 'EOF'
+          CONFIG_IP_NF_TARGET_TTL=y
+          CONFIG_IP6_NF_TARGET_HL=y
+          CONFIG_IP6_NF_MATCH_HL=y
+          EOF
+          echo "✅ TTL/HL Target enabled"
+
+      - name: F2FS Optimizations
+        if: ${{ true }}
+        working-directory: kernel_workspace
+        run: |
+          cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
+          CONFIG_F2FS_FS=y
+          CONFIG_F2FS_STAT_FS=y
+          CONFIG_F2FS_FS_XATTR=y
+          CONFIG_F2FS_FS_POSIX_ACL=y
+          CONFIG_F2FS_FS_SECURITY=y
+          CONFIG_F2FS_FS_COMPRESSION=y
+          CONFIG_F2FS_FS_LZO=y
+          CONFIG_F2FS_FS_LZ4=y
+          CONFIG_F2FS_FS_ZSTD=y
+          EOF
+
+      - name: Enable WireGuard
+        if: ${{ true }}
+        working-directory: kernel_workspace
+        run: |
+          echo "CONFIG_WIREGUARD=y" >> common/arch/arm64/configs/gki_defconfig
+
+      - name: Enable Full Netfilter
+        if: ${{ false }}
+        working-directory: kernel_workspace
+        run: |
+          cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
+          CONFIG_NF_CONNTRACK=y
+          CONFIG_NF_CONNTRACK_MARK=y
+          CONFIG_NF_CONNTRACK_ZONES=y
+          CONFIG_NF_CONNTRACK_TIMESTAMP=y
+          CONFIG_NF_CONNTRACK_EVENTS=y
+          CONFIG_NF_CONNTRACK_TIMEOUT=y
+          CONFIG_NF_CONNTRACK_LABELS=y
+          CONFIG_NF_NAT=y
+          CONFIG_NF_NAT_MASQUERADE=y
+          CONFIG_NETFILTER_XT_MATCH_HASHLIMIT=y
+          CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+          CONFIG_NETFILTER_XT_MATCH_CONNLIMIT=y
+          CONFIG_NETFILTER_XT_MATCH_STATE=y
+          CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y
+          CONFIG_NETFILTER_XT_TARGET_REDIRECT=y
+          EOF
+
+      - name: Enable LRNG v60
+        if: ${{ true }}
+        working-directory: kernel_workspace/common
+        run: |
+          patch -p1 --forward --no-backup-if-mismatch < ../wildkernels_patches/common/lrng/lrng_v60_android15-6.6.patch
+          cat >> arch/arm64/configs/gki_defconfig << 'EOF'
+          CONFIG_RANDOM_DEFAULT_IMPL=n
+          CONFIG_LRNG=y
+          CONFIG_LRNG_COLLECTION_SIZE_1024=y
+          CONFIG_LRNG_HEALTH_TESTS=y
+          CONFIG_LRNG_IRQ=y
+          CONFIG_LRNG_CONTINUOUS_COMPRESSION_ENABLED=y
+          EOF
+          echo "✅ LRNG v60 enabled"
+
+      - name: Enable Wakelock Blocker
+        if: ${{ true }}
+        working-directory: kernel_workspace/common
+        run: |
+          cat >> arch/arm64/configs/gki_defconfig << 'EOF'
+          CONFIG_PM_WAKELOCKS=y
+          CONFIG_PM_WAKELOCKS_GC=y
+          CONFIG_PM_WAKELOCKS_LIMIT=100
+          EOF
+
+      - name: Configure BBR & Brutal
+        run: |
+          if [[ "default" != "false" ]]; then
+            cd kernel_workspace
+            echo "CONFIG_TCP_CONG_ADVANCED=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_TCP_CONG_BBR=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_TCP_CONG_CUBIC=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_TCP_CONG_VEGAS=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_TCP_CONG_NV=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_TCP_CONG_WESTWOOD=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_TCP_CONG_HTCP=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_TCP_CONG_BRUTAL=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_NET_SCH_FQ=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_NET_SCH_FQ_CODEL=y" >> ./common/arch/arm64/configs/gki_defconfig
+            if [[ "default" == "default" ]]; then
+              echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> ./common/arch/arm64/configs/gki_defconfig
+            else
+              echo "CONFIG_DEFAULT_TCP_CONG=cubic" >> ./common/arch/arm64/configs/gki_defconfig
+            fi
+          fi
+
+      - name: Apply BBRv3
+        working-directory: kernel_workspace/common
+        run: |
+          echo "::group::Apply BBRv3 patches"
+          echo "CONFIG_TCP_CONG_ADVANCED=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_TCP_CONG_BBR3=y"     >> arch/arm64/configs/gki_defconfig
+          BBRV3_PATCH="../wildkernels_patches/common/bbrv3/0001-net-tcp-backport-BBRv3-to-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
+          if [ -f "$BBRV3_PATCH" ]; then
+            patch -p1 -F 3 < "$BBRV3_PATCH"
+            echo "✅ BBRv3 patch applied"
+          else
+            echo "::warning::BBRv3 patch not found at $BBRV3_PATCH — skipping"
+          fi
+          echo "::endgroup::"
+
+      - name: Configure LTO
+        run: |
+          cd kernel_workspace
+          if [[ "thin" == "none" ]]; then
+            echo "CONFIG_LTO_NONE=y" >> ./common/arch/arm64/configs/gki_defconfig
+          elif [[ "thin" == "full" ]]; then
+            echo "CONFIG_LTO_CLANG_FULL=y" >> ./common/arch/arm64/configs/gki_defconfig
+          else
+            echo "CONFIG_LTO_CLANG_THIN=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
+
+          # scripts/Makefile.autofdo supplies compilation and ThinLTO linker flags.
+          # Identical Kconfig for both A and B. The profile variable alone changes.
+          test -s "$AUTOFDO_PROFILE" || { echo "::error::AutoFDO profile is missing"; exit 1; }
+          echo "CONFIG_AUTOFDO_CLANG=y" >> ./common/arch/arm64/configs/gki_defconfig
+
+      - name: Configure ADIOS IO
+        if: ${{ true }}
+        run: |
+          cd kernel_workspace
+          echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> ./common/arch/arm64/configs/gki_defconfig
+
+      - name: Configure Re-Kernel
+        if: ${{ true }}
+        run: |
+          cd kernel_workspace
+          echo "CONFIG_REKERNEL=y" >> ./common/arch/arm64/configs/gki_defconfig
+
+      - name: Configure Baseband Guard
+        if: ${{ true }}
+        run: |
+          cd kernel_workspace
+          echo "CONFIG_BBG=y" >> ./common/arch/arm64/configs/gki_defconfig
+          cd ./common
+          curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
+
+      - name: 📦 Add build name
+        run: |
+          cd kernel_workspace
+          sudo sed -i "s/-4k/-palaziks-ShiftPorts/g" ./common/arch/arm64/configs/gki_defconfig
+          sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
+          echo "CONFIG_LOCALVERSION_AUTO=n" >> ./common/arch/arm64/configs/gki_defconfig
+
+      - name: Fingerprint fully patched kernel sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/common
+          # Freeze every regular file content; ignore nested VCS metadata.
+          find . -type f -not -path '*/.git/*' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d ' ' -f1 > "$GITHUB_WORKSPACE/source-tree.sha256"
+          echo "Patched kernel source fingerprint: $(cat "$GITHUB_WORKSPACE/source-tree.sha256")"
+
+      - name: 🔨 Build Kernel
+        run: |
+          WORKDIR="$(pwd)"
+          export MAP="-fdebug-prefix-map=${GITHUB_WORKSPACE}=. -fmacro-prefix-map=${GITHUB_WORKSPACE}=. -ffile-prefix-map=${GITHUB_WORKSPACE}=."
+          export PATH="$WORKDIR/kernel_workspace/clang-r563880c/bin:$WORKDIR/kernel_workspace/build-tools/linux-x86/bin:$PATH"
+          CLANG_DIR="$WORKDIR/kernel_workspace/clang-r563880c/bin"
+          echo "Clang: $($CLANG_DIR/clang --version | head -n 1)"
+          echo "LLD:   $($CLANG_DIR/ld.lld --version | head -n 1)"
+          pahole --version 2>/dev/null || echo "Pahole: Not Installed"
+
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          export CCACHE_LOGFILE="${{ github.workspace }}/kernel_workspace/ccache.log"
+          export CCACHE_IS_KERNEL_COMPILING=true
+
+          mkdir -p $GITHUB_WORKSPACE/kout
+          mkdir -p "$LDCACHE_DIR"
+
+          cd kernel_workspace/common
+          set -o pipefail
+          : > /tmp/kbuild.log
+
+          # Proof of the sample profile reaching LLD (flags are supplied by Kbuild).
+          cat > ld-wrapper <<'EOF'
+          #!/usr/bin/env bash
+          for arg in "$@"; do
+            case "$arg" in
+              --lto-sample-profile=*)
+                printf '%s\n' "$arg" >> "$GITHUB_WORKSPACE/kout/autofdo-linker-args.log"
+                ;;
+            esac
+          done
+          exec ld.lld "$@" --thinlto-cache-dir="$LDCACHE_DIR" --thinlto-jobs="$(($(nproc --all) / 2))"
+          EOF
+          chmod +x ld-wrapper
+
+          wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/lib/libfakestat.so || true
+          wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/lib/libfaketimeMT.so || true
+          chmod 777 ./*.so || true
+          SO_DIR=$(pwd)
+          export FAKESTAT="2025-05-25 12:00:00"
+          export FAKETIME="@2025-05-25 13:00:00"
+          export PRELOAD_LIBS="$SO_DIR/libfakestat.so $SO_DIR/libfaketimeMT.so"
+
+          make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="ccache clang" LD="$(pwd)/ld-wrapper" HOSTLD="$(pwd)/ld-wrapper" \
+            O=$GITHUB_WORKSPACE/kout \
+            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option"\
+            gki_defconfig 2>&1 | tee -a /tmp/kbuild.log
+
+          # Compare final Kconfig selections with the requested defconfig entries.
+          # This is diagnostic-only: mismatches warn but do not abort the build.
+          echo "::group::Resolved Kconfig: swap, zram, HZ, NFS/NFSD, Droidspaces"
+          CFG="$GITHUB_WORKSPACE/kout/.config"
+          DEFCONFIG_DIAG="arch/arm64/configs/gki_defconfig"
+          REPORT="$GITHUB_WORKSPACE/kernel-config-diagnostics.md"
+          if [ ! -s "$CFG" ]; then
+            echo "::error::Kconfig output is missing: $CFG"
+            exit 1
+          fi
+          {
+            echo "### Effective kernel configuration"
+            echo ""
+            echo "The values below were taken from kout/.config **after** make gki_defconfig."
+            echo ""
+            echo "| Symbol | Last request in gki_defconfig | Actual in .config |"
+            echo "|---|---|---|"
+            for symbol in \
+              LTO_NONE LTO_CLANG_FULL LTO_CLANG_THIN AUTOFDO_CLANG \
+              SWAP ZRAM ZSMALLOC ZRAM_WRITEBACK ZRAM_MULTI_COMP EXT4_FS \
+              HZ HZ_100 HZ_250 HZ_300 HZ_1000 NO_HZ_IDLE NO_HZ_FULL \
+              NETWORK_FILESYSTEMS NFS_FS NFS_V2 NFS_V3 NFS_V3_ACL \
+              NFS_V4 NFS_V4_1 NFS_V4_2 NFS_V4_2_READ_PLUS \
+              NFSD NFSD_V2 NFSD_V3 NFSD_V3_ACL NFSD_V4 \
+              CGROUPS CGROUP_SCHED FAIR_GROUP_SCHED CFS_BANDWIDTH CGROUP_PIDS MACVLAN
+            do
+              requested=$(grep -E "^(CONFIG_${symbol}=|# CONFIG_${symbol} is not set$)" "$DEFCONFIG_DIAG" | tail -n 1 || true)
+              resolved=$(grep -E "^(CONFIG_${symbol}=|# CONFIG_${symbol} is not set$)" "$CFG" | tail -n 1 || true)
+              [ -n "$requested" ] || requested="(no explicit request)"
+              [ -n "$resolved" ] || resolved="(symbol absent)"
+              printf "| %s | %s | %s |\n" "$symbol" "$requested" "$resolved"
+              if [ "$requested" != "(no explicit request)" ] && [ "$requested" != "$resolved" ]; then
+                echo "::warning title=Kconfig mismatch::${symbol}: requested [$requested], resolved [$resolved]" >&2
+              fi
+            done
+            echo ""
+            echo "Full effective .config is available in the kernel-config-diagnostics artifact."
+          } | tee "$REPORT" | tee -a /tmp/kbuild.log
+          cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
+
+          # Keep the full resolved config separately for artifact comparison.
+          cp "$CFG" "$GITHUB_WORKSPACE/resolved-kernel.config"
+
+          # Fail if the resolved config differs from the intended Droidspaces regression test.
+          if [[ "true" == "true" ]]; then
+            for symbol in CGROUPS CGROUP_SCHED FAIR_GROUP_SCHED MACVLAN; do
+              if ! grep -qx "CONFIG_${symbol}=y" "$CFG"; then
+                echo "::error title=Droidspaces Kconfig missing::CONFIG_${symbol}=y not present in resolved kernel config"
+                exit 1
+              fi
+            done
+            for symbol in CFS_BANDWIDTH CGROUP_PIDS; do
+              if ! grep -qx "# CONFIG_${symbol} is not set" "$CFG"; then
+                echo "::error title=Droidspaces GKI KMI check::CONFIG_${symbol} must be disabled for stock vendor modules"
+                exit 1
+              fi
+            done
+          fi
+
+          # Check the resolved configuration and pass the profile via the
+          # documented Kbuild variable, not via KCFLAGS.
+          AUTOFDO_MAKE_ARGS=()
+          grep -qx "CONFIG_LTO_CLANG_THIN=y" "$CFG" || { echo "::error::ThinLTO not enabled in resolved Kconfig"; exit 1; }
+          grep -qx "CONFIG_AUTOFDO_CLANG=y" "$CFG" || { echo "::error::AutoFDO not enabled in resolved Kconfig"; exit 1; }
+          if [[ "$PROFILE_MODE" == "profiled" ]]; then
+            test -s "$AUTOFDO_PROFILE" || { echo "::error::AutoFDO profile missing before Image build"; exit 1; }
+            AUTOFDO_MAKE_ARGS=("CLANG_AUTOFDO_PROFILE=$AUTOFDO_PROFILE")
+          else
+            echo "Baseline: CONFIG_AUTOFDO_CLANG=y but CLANG_AUTOFDO_PROFILE not passed"
+          fi
+
+          SECONDS=0
+          make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="ccache clang" LD="$(pwd)/ld-wrapper" HOSTLD="$(pwd)/ld-wrapper" \
+            O=$GITHUB_WORKSPACE/kout \
+            "${AUTOFDO_MAKE_ARGS[@]}" \
+            KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration -Wno-implicit-int -Wno-default-const-init-var-unsafe -Wno-format -Wno-unknown-warning-option ${EXTRA_CFLAGS:-} ${MAP}" \
+            Image 2>&1 | tee -a /tmp/kbuild.log
+          echo "$SECONDS" > "$GITHUB_WORKSPACE/build-duration.txt"
+
+          if [[ "$PROFILE_MODE" == "profiled" ]]; then
+            if ! grep -Fxq -- "--lto-sample-profile=$AUTOFDO_PROFILE" "$GITHUB_WORKSPACE/kout/autofdo-linker-args.log"; then
+              echo "::error title=AutoFDO link verification failed::LLD never received --lto-sample-profile"
+              exit 1
+            fi
+            echo "AutoFDO+ThinLTO verified: Kconfig enabled; LLD received the profile"
+          elif [[ -s "$GITHUB_WORKSPACE/kout/autofdo-linker-args.log" ]]; then
+            echo "::error::Baseline LLD unexpectedly received --lto-sample-profile"
+            exit 1
+          fi
+
+          echo "Kernel Compilation Complete!"
+          ccache -c
+          ccache --evict-older-than 10800s
+          echo "CCache Status:"
+          ccache -s
+          df -h
+
+      - name: 📋 Preserve resolved kernel config
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-config-diagnostics-${{ matrix.profile_mode }}-${{ github.run_id }}
+          path: |
+            kout/.config
+            resolved-kernel.config
+            kernel-config-diagnostics.md
+            autofdo-profile-summary.txt
+            kout/autofdo-linker-args.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Collect per-variant ELF and AutoFDO metrics
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE"
+          CLANG="$ROOT/kernel_workspace/clang-r563880c/bin"
+          OUT="$ROOT/analysis/$PROFILE_MODE"
+          mkdir -p "$OUT"
+          python3 "$ROOT/research-tools/tools/autofdo_offline_metrics.py" collect \
+            --mode "$PROFILE_MODE" --build-dir "$ROOT/kout" --toolchain "$CLANG" \
+            --source-fingerprint "$ROOT/source-tree.sha256" \
+            --build-duration "$ROOT/build-duration.txt" \
+            --profile "$ROOT/kernel.afdo" \
+            --linker-args "$ROOT/kout/autofdo-linker-args.log" \
+            --output "$OUT"
+          "$CLANG/llvm-profdata" show --sample --topn=100 "$ROOT/kernel.afdo" > "$OUT/profile-top100.txt"
+          "$CLANG/llvm-profdata" show --sample --show-prof-sym-list=true "$ROOT/kernel.afdo" > "$OUT/profile-symbol-list.txt" || true
+          "$CLANG/llvm-readelf" -SW "$ROOT/kout/vmlinux" > "$OUT/elf-sections.txt"
+          grep -E "sample.profile|profile.*sampl|AutoFDO|lto-sample-profile" /tmp/kbuild.log | tail -n 500 > "$OUT/profile-build-notes.txt" || true
+          cp "$ROOT/source-tree.sha256" "$OUT/source-tree.sha256"
+          cp "$ROOT/kout/.config" "$OUT/resolved.config"
+          cp "$ROOT/autofdo-profile-summary.txt" "$OUT/"
+          echo "### $PROFILE_MODE static build metrics" >> "$GITHUB_STEP_SUMMARY"
+          echo '~~~json' >> "$GITHUB_STEP_SUMMARY"
+          cat "$OUT/metrics.json" | python3 -c 'import sys,json; d=json.load(sys.stdin); [d.pop(k,None) for k in ("sections","top_text_symbols")]; print(json.dumps(d,indent=2))' >> "$GITHUB_STEP_SUMMARY"
+          echo '~~~' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload offline A/B variant data
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: autofdo-offline-${{ matrix.profile_mode }}-${{ github.run_id }}
+          path: |
+            analysis/${{ matrix.profile_mode }}/
+            kernel-config-diagnostics.md
+            autofdo-profile-summary.txt
+            source-tree.sha256
+            build-duration.txt
+            kout/autofdo-linker-args.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  comparison:
+    needs: compare-build
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout metrics reporter
+        uses: actions/checkout@v4
+        with:
+          path: research-tools
+          sparse-checkout: |
+            tools
+          persist-credentials: false
+
+      - name: Download A/B artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: autofdo-offline-*-${{ github.run_id }}
+          path: offline-input
+
+      - name: Compare controlled builds
+        run: |
+          set -euo pipefail
+          python3 research-tools/tools/autofdo_offline_metrics.py compare \
+            --input-dir offline-input --output offline-report
+          cat offline-report/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve comparison report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: autofdo-offline-report-${{ github.run_id }}
+          path: offline-report/
+          if-no-files-found: warn
+          retention-days: 14
